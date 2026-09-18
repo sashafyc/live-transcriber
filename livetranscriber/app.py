@@ -87,6 +87,7 @@ class LiveTranscriber(rumps.App):
 
     def _on_launched(self, timer) -> None:
         timer.stop()
+        logging.info("Проверяю настройки после запуска")
         missing = config.missing_keys(self.cfg)
         if not config.is_configured(self.cfg):
             windows.info(
@@ -98,7 +99,11 @@ class LiveTranscriber(rumps.App):
         if missing:
             logging.warning("Не заданы: %s", "; ".join(missing))
         if self.cfg.get("show_start_window_on_launch", True):
-            self.on_start(None)
+            logging.info("Открываю окно записи при запуске")
+            try:
+                self.on_start(None)
+            except Exception:
+                logging.exception("окно записи при запуске не открылось")
 
     def notify(self, title: str, message: str, subtitle: str = "") -> None:
         try:

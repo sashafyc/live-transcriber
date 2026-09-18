@@ -114,7 +114,10 @@ def _alert(title: str, info: str = "", buttons: tuple[str, ...] = ("OK",),
     try:
         return alert.runModal()
     finally:
-        NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        # Пока открыто хоть одно обычное окно, приложение остаётся обычным:
+        # переход в фоновый режим прячет все открытые окна разом
+        if not _open_panels:
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
 
 def info(title: str, message: str = "") -> None:
@@ -178,6 +181,9 @@ class _PanelController(NSObject):
             if window is panel:
                 _open_panels.pop(index)
                 break
+        if not _open_panels:
+            # Окон не осталось — приложению снова место в строке меню, не в Dock
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
 
 def _make_panel(title: str, width: float, height: float):
@@ -197,11 +203,13 @@ def _show_panel(panel, controller) -> None:
     panel.setDelegate_(controller)
     controller.panel = panel
     _open_panels.append((panel, controller))
+    # Приложение живёт в строке меню, и в таком режиме окна не показываются.
+    # На время, пока окно открыто, приложение становится обычным; вернуть его
+    # в фоновый режим сразу нельзя — при этом macOS прячет открытые окна.
     NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
     NSApp.activateIgnoringOtherApps_(True)
     panel.makeKeyAndOrderFront_(None)
     panel.orderFrontRegardless()
-    NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
 
 def _panel_button(title: str, x: float, width: float, controller, action: str) -> NSButton:
