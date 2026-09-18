@@ -1,0 +1,10 @@
+{
+  "assemblyai_key": "",
+  "deepseek_key": "",
+  "telegram_token": "",
+  "telegram_chat": "",
+  "language": "ru",
+  "retention_days": 30,
+  "send_to_telegram": true,
+  "show_start_window_on_launch": true
+}

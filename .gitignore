@@ -1,0 +1,22 @@
+# Секреты и локальные данные — НИКОГДА в репозиторий
+config.json
+*.env
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Сборка
+build/
+dist/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Локальные записи (на случай если кто-то положит их в проект)
+records/
+logs/
