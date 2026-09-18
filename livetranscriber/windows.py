@@ -118,7 +118,15 @@ def _alert(title: str, info: str = "", buttons: tuple[str, ...] = ("OK",),
 
 
 def info(title: str, message: str = "") -> None:
-    _alert(title, message, ("Закрыть",))
+    """Сообщение обычным окном: появляется само, поэтому блокировать нельзя."""
+    width, height = 460, 220
+    panel = _make_panel(title, width, height)
+    controller = _PanelController.alloc().init()
+    content = panel.contentView()
+    content.addSubview_(label(title, 16, height - 44, width - 32, size=14, bold=True))
+    content.addSubview_(text_area(message, 16, 58, width - 32, height - 116, rich=True))
+    content.addSubview_(_panel_button("Закрыть", width - 116, 100, controller, "onClose:"))
+    _show_panel(panel, controller)
 
 
 def confirm(title: str, message: str, ok: str = "Да", cancel: str = "Отмена") -> bool:
@@ -126,42 +134,6 @@ def confirm(title: str, message: str, ok: str = "Да", cancel: str = "Отме�
 
 
 # ── окно старта ─────────────────────────────────────────
-def start_dialog(mic_name: str, output_name: str, blackhole_ok: bool,
-                 default_prompt: str) -> dict | None:
-    """Название записи и промт. Возвращает None, если отменили."""
-    view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 440, 250))
-
-    view.addSubview_(label("Название:", 0, 224, 90))
-    name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(95, 220, 345, 24))
-    name_field.setStringValue_("Созвон")
-    view.addSubview_(name_field)
-
-    view.addSubview_(label("Что сделать с записью:", 0, 192, 300))
-    prompt_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 440, 140))
-    prompt_view.setFont_(NSFont.systemFontOfSize_(11))
-    prompt_view.setString_(default_prompt)
-    prompt_scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(0, 46, 440, 140))
-    prompt_scroll.setHasVerticalScroller_(True)
-    prompt_scroll.setBorderType_(NSBezelBorder)
-    prompt_scroll.setDocumentView_(prompt_view)
-    view.addSubview_(prompt_scroll)
-
-    sound = "звук собеседника пишется" if blackhole_ok else "⚠️ звук собеседника НЕ пишется"
-    view.addSubview_(label(f"Микрофон: {mic_name}", 0, 24, 440, size=11))
-    view.addSubview_(label(f"Выход: {output_name} · {sound}", 0, 6, 440, size=11))
-
-    choice = _alert("Новая запись", "", ("Начать запись", "Проверить звук", "Отмена"), view)
-    if choice == BUTTON_SECOND:
-        return {"action": "check"}
-    if choice != BUTTON_FIRST:
-        return None
-    return {
-        "action": "start",
-        "title": name_field.stringValue().strip() or "Созвон",
-        "prompt": prompt_view.string().strip() or default_prompt,
-    }
-
-
 # ── немодальные окна ────────────────────────────────────
 # Модальное окно останавливает всё приложение: пока оно открыто, меню в строке
 # состояния не отвечает. 18.09.2026 такое окно ушло за другие окна, и приложение
@@ -239,6 +211,62 @@ def _panel_button(title: str, x: float, width: float, controller, action: str) -
     button.setTarget_(controller)
     button.setAction_(NSSelectorFromString(action))
     return button
+
+
+# ── окно старта ─────────────────────────────────────────
+def start_dialog(mic_name: str, output_name: str, blackhole_ok: bool,
+                 default_prompt: str, on_start, on_check) -> None:
+    """Название записи и задание для итога.
+
+    Окно обычное: при запуске приложения оно открывается само, и модальное
+    остановило бы всё приложение, если бы его вовремя не закрыли.
+    """
+    width, height = 520, 360
+    panel = _make_panel("Новая запись", width, height)
+    controller = _PanelController.alloc().init()
+    content = panel.contentView()
+
+    content.addSubview_(label("Название:", 16, height - 44, 90))
+    name_field = NSTextField.alloc().initWithFrame_(
+        NSMakeRect(110, height - 48, width - 126, 24))
+    name_field.setStringValue_("Созвон")
+    content.addSubview_(name_field)
+
+    content.addSubview_(label("Что сделать с записью:", 16, height - 76, 300))
+    prompt_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, width - 32, 150))
+    prompt_view.setFont_(NSFont.systemFontOfSize_(11))
+    prompt_view.setString_(default_prompt)
+    prompt_scroll = NSScrollView.alloc().initWithFrame_(
+        NSMakeRect(16, 96, width - 32, 150))
+    prompt_scroll.setHasVerticalScroller_(True)
+    prompt_scroll.setBorderType_(NSBezelBorder)
+    prompt_scroll.setDocumentView_(prompt_view)
+    content.addSubview_(prompt_scroll)
+
+    sound = ("звук собеседника пишется" if blackhole_ok
+             else "⚠️ звук собеседника НЕ пишется")
+    content.addSubview_(label(f"Микрофон: {mic_name}", 16, 72, width - 32, size=11))
+    content.addSubview_(label(f"Выход: {output_name} · {sound}", 16, 56,
+                              width - 32, size=11))
+
+    def begin() -> None:
+        title = name_field.stringValue().strip() or "Созвон"
+        prompt = prompt_view.string().strip() or default_prompt
+        panel.close()
+        on_start(title, prompt)
+
+    def check() -> None:
+        panel.close()
+        on_check()
+
+    controller.first_callback = begin
+    controller.second_callback = check
+    content.addSubview_(_panel_button("Начать запись", 16, 150, controller, "onFirst:"))
+    content.addSubview_(_panel_button("Проверить звук", 174, 150, controller, "onSecond:"))
+    content.addSubview_(_panel_button("Отмена", width - 116, 100, controller, "onClose:"))
+
+    _show_panel(panel, controller)
+    panel.makeFirstResponder_(name_field)
 
 
 # ── окно саммари ────────────────────────────────────────
@@ -401,8 +429,15 @@ def settings_window(cfg: dict, on_check) -> dict | None:
 
 # ── проверка звука ──────────────────────────────────────
 def audio_report_window(report: dict) -> None:
-    body = "\n".join(report["lines"])
-    view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 520, 280))
-    view.addSubview_(text_area(body, 0, 0, 520, 280, monospace=True))
+    width, height = 560, 380
     title = "Звук в порядке" if report["ok"] else "Со звуком есть проблемы"
-    _alert(title, "; ".join(report["problems"]), ("Закрыть",), view)
+    panel = _make_panel(title, width, height)
+    controller = _PanelController.alloc().init()
+    content = panel.contentView()
+    if report["problems"]:
+        content.addSubview_(label("; ".join(report["problems"]), 16, height - 44,
+                                  width - 32, size=12, bold=True))
+    content.addSubview_(text_area("\n".join(report["lines"]), 16, 58,
+                                  width - 32, height - 116, monospace=True))
+    content.addSubview_(_panel_button("Закрыть", width - 116, 100, controller, "onClose:"))
+    _show_panel(panel, controller)

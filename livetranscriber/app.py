@@ -120,18 +120,18 @@ class LiveTranscriber(rumps.App):
         output_name = audio.current_output() or "не определён"
         blackhole_ok = audio.find_device(audio.BLACKHOLE_NAME) is not None
 
-        result = windows.start_dialog(mic_name, output_name, blackhole_ok,
-                                      self.cfg.get("prompt", config.DEFAULT_PROMPT))
-        if result is None:
-            return
-        if result["action"] == "check":
-            self.on_sound_check(None)
-            return
-        if not mic:
-            windows.info("Микрофон не найден",
-                         "Подключите микрофон и проверьте разрешение в настройках системы.")
-            return
-        self._begin_recording(result["title"], result["prompt"], mic[0])
+        def begin(title: str, prompt: str) -> None:
+            if not mic:
+                windows.info("Микрофон не найден",
+                             "Подключите микрофон и проверьте разрешение "
+                             "в настройках системы.")
+                return
+            self._begin_recording(title, prompt, mic[0])
+
+        windows.start_dialog(mic_name, output_name, blackhole_ok,
+                             self.cfg.get("prompt", config.DEFAULT_PROMPT),
+                             on_start=begin,
+                             on_check=lambda: self.on_sound_check(None))
 
     def _begin_recording(self, title: str, prompt: str, mic_index: str) -> None:
         self.record = storage.Record.create(title, prompt)
