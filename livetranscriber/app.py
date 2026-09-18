@@ -39,6 +39,7 @@ class LiveTranscriber(rumps.App):
         self.aggregate_id: int | None = None
         self.silent_streak = 0
         self._busy = False
+        self._stopping = False
         self._ui_tasks: list = []
         self._ui_lock = threading.Lock()
 
@@ -169,6 +170,7 @@ class LiveTranscriber(rumps.App):
 
         self.started_at = time.time()
         self.silent_streak = 0
+        self._stopping = False
         self.title = ICON_RECORDING
         self.menu[MENU_START].set_callback(None)
         self.menu[MENU_STOP].set_callback(self.on_stop)
@@ -188,16 +190,20 @@ class LiveTranscriber(rumps.App):
             self.ui(lambda: self.notify("Транскрибация не идёт", message[:180]))
 
     def _on_level(self, level: float, index: int) -> None:
+        # Последний кусок приходит уже после нажатия «Остановить»: значок к тому
+        # моменту показывает обработку, и возвращать его в запись нельзя
+        if self._stopping or not self.started_at:
+            return
         if level < audio.SILENCE_RMS:
             self.silent_streak += 1
-            self.title = ICON_SILENT
+            self.ui(lambda: setattr(self, "title", ICON_SILENT))
             if self.silent_streak == 2:
                 self.ui(lambda: self.notify(
                     "Две минуты тишины",
                     "Запись идёт, но звука нет. Проверьте микрофон и вывод звука."))
         else:
             self.silent_streak = 0
-            self.title = ICON_RECORDING
+            self.ui(lambda: setattr(self, "title", ICON_RECORDING))
 
     def _on_capture_failure(self, message: str) -> None:
         logging.error("Захват сорвался: %s", message)
@@ -207,6 +213,7 @@ class LiveTranscriber(rumps.App):
     def on_stop(self, _sender) -> None:
         if not self.recorder:
             return
+        self._stopping = True
         self.menu[MENU_STOP].set_callback(None)
         self.title = ICON_WORKING
         self._busy = True
@@ -241,6 +248,7 @@ class LiveTranscriber(rumps.App):
             note = self._send_summary(summary) if summary else ""
             record.write_meta({"status": "готово"})
             if summary:
+                self.ui(self._reset_menu)
                 self.ui(lambda: self._show_summary(record, summary, note))
         except Exception as e:  # noqa: BLE001
             logging.exception("обработка записи сорвалась")
@@ -252,6 +260,7 @@ class LiveTranscriber(rumps.App):
             self.pipeline = None
             self.started_at = None
             self._busy = False
+            self._stopping = False
             self.ui(self._reset_menu)
 
     def _make_summary(self, record: storage.Record, body: str) -> str:
@@ -281,11 +290,13 @@ class LiveTranscriber(rumps.App):
             return f"В Telegram не ушло: {e}"[:120]
 
     def _show_summary(self, record: storage.Record, summary: str, note: str) -> None:
-        action = windows.summary_window(record.title, summary, record.path, note)
-        if action == "copy":
-            self.notify("Скопировано", "Итог в буфере обмена")
-        elif action == "telegram":
+        def send_again() -> None:
             self.notify("Отправка", self._send_summary(summary))
+
+        windows.summary_window(
+            record.title, summary, record.path, note,
+            on_send=send_again,
+            on_copy=lambda: self.notify("Скопировано", "Итог в буфере обмена"))
 
     def _restore_audio(self) -> None:
         if self.previous_output:
@@ -302,9 +313,8 @@ class LiveTranscriber(rumps.App):
 
     # ── прочие пункты меню ──────────────────────────────
     def on_history(self, _sender) -> None:
-        records = storage.Record.list_all()
-        windows.history_window(records, self.cfg.get("retention_days",
-                                                     config.RETENTION_DAYS))
+        windows.history_window(storage.Record.list_all(),
+                               self.cfg.get("retention_days", config.RETENTION_DAYS))
 
     def on_sound_check(self, _sender) -> None:
         self.notify("Проверяю звук", "Займёт несколько секунд")

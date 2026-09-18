@@ -8,6 +8,7 @@ import re
 
 import requests
 
+from . import markup
 from .config import parse_chat
 
 API = "https://api.telegram.org/bot{token}/{method}"
@@ -37,66 +38,13 @@ def check(token: str, chat: str) -> tuple[bool, str]:
 
 
 def to_html(markdown: str) -> str:
-    """Markdown → разметка Telegram.
-
-    Telegram не показывает ни заголовки решётками, ни таблицы: они приходят
-    к читателю как есть и мешают. Заголовки делаем жирными строками, таблицы
-    разворачиваем в строки, маркеры списка приводим к точке.
-    """
-    text = html.escape(markdown or "", quote=False)
-    lines_in = text.split("\n")
-    lines_out: list[str] = []
-    table: list[list[str]] = []
-
-    def flush_table() -> None:
-        if not table:
-            return
-        rows = [row for row in table
-                if not all(re.fullmatch(r":?-{2,}:?", cell or "") for cell in row)]
-        header = rows[0] if len(rows) > 1 else []
-        for row in rows[1:] if header else rows:
-            pairs = []
-            for index, cell in enumerate(row):
-                if not cell:
-                    continue
-                name = header[index] if index < len(header) else ""
-                pairs.append(f"{name}: {cell}" if name and name.lower() not in ("кто", "что")
-                             else cell)
-            if pairs:
-                lines_out.append("• " + " — ".join(pairs))
-        table.clear()
-
-    for line in lines_in:
-        stripped = line.strip()
-        if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2:
-            table.append([cell.strip() for cell in stripped.strip("|").split("|")])
-            continue
-        flush_table()
-
-        heading = re.match(r"^\s*#{1,6}\s*(.+?)\s*$", line)
-        if heading:
-            title = heading.group(1).rstrip(":")
-            # Номер раздела оставляем, он помогает ориентироваться
-            lines_out.append(f"<b>{title}</b>")
-            continue
-
-        bullet = re.match(r"^(\s*)[-*+]\s+(.+)$", line)
-        if bullet:
-            indent = "   " if len(bullet.group(1)) >= 2 else ""
-            lines_out.append(f"{indent}• {bullet.group(2)}")
-            continue
-
-        lines_out.append(line)
-    flush_table()
-
-    result = "\n".join(lines_out)
-    result = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", result, flags=re.S)
-    result = re.sub(r"__(.+?)__", r"<b>\1</b>", result, flags=re.S)
-    result = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", result)
-    result = re.sub(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])", r"<i>\1</i>", result)
-    # Больше двух пустых строк подряд Telegram всё равно схлопывает
-    result = re.sub(r"\n{3,}", "\n\n", result)
-    return result.strip()
+    """Markdown → разметка Telegram."""
+    text = html.escape(markup.normalize(markdown), quote=False)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.S)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text, flags=re.S)
+    text = re.sub(r"`([^`\n]+?)`", r"<code>\1</code>", text)
+    text = re.sub(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])", r"<i>\1</i>", text)
+    return text.strip()
 
 
 def _split(text: str) -> list[str]:
