@@ -10,6 +10,7 @@ from __future__ import annotations
 import array
 import ctypes
 import logging
+import math
 import os
 import re
 import shutil
@@ -32,8 +33,8 @@ BLACKHOLE_UID = "BlackHole2ch_UID"
 AGGREGATE_NAME = "LT-Auto"
 AGGREGATE_UID = "com.livetranscriber.lt-auto"
 
-# Тишиной считаем чанк с RMS ниже порога. amix делит громкость пополам,
-# поэтому порог низкий.
+# Тишиной считаем чанк с уровнем ниже порога. Уровень меряется по каждой
+# дорожке отдельно, поэтому порог обычный.
 SILENCE_RMS = 15
 
 _ca = ctypes.cdll.LoadLibrary(
@@ -90,19 +91,37 @@ def run(cmd: list[str], timeout: float = 5) -> tuple[int, str, str]:
 
 
 def rms(pcm: bytes) -> float:
-    """Громкость куска PCM s16le. Шаг 4 сэмпла — точности достаточно."""
+    """Громкость куска PCM. audioop из Python 3.13 удалён, считаем сами."""
     if not pcm:
         return 0.0
     samples = array.array("h")
     samples.frombytes(pcm[:len(pcm) // 2 * 2])
     if not samples:
         return 0.0
-    step = 4 if len(samples) > 4000 else 1
-    chosen = samples[::step]
-    return (sum(s * s for s in chosen) / len(chosen)) ** 0.5
+    total = sum(float(v) * v for v in samples)
+    return math.sqrt(total / len(samples))
 
 
-# ── CoreAudio ───────────────────────────────────────────
+def levels(pcm: bytes, channels: int) -> list[float]:
+    """Громкость каждой дорожки отдельно: [микрофон, собеседник].
+
+    Без разделения тихий собеседник тонет в громком микрофоне, и приложение
+    показывает «звук есть», когда половина разговора не пишется.
+    """
+    if channels <= 1:
+        return [rms(pcm)]
+    samples = array.array("h")
+    samples.frombytes(pcm[:len(pcm) // (2 * channels) * 2 * channels])
+    out = []
+    for ch in range(channels):
+        part = samples[ch::channels]
+        if not part:
+            out.append(0.0)
+            continue
+        out.append(math.sqrt(sum(float(v) * v for v in part) / len(part)))
+    return out
+
+
 def _cf_string(device_id: int, selector: int) -> str:
     prop = _Addr(selector, _SCOPE_GLOBAL, 0)
     size = ctypes.c_uint32(8)
@@ -214,6 +233,123 @@ def create_aggregate(output_uid: str) -> int | None:
     return None
 
 
+# ── звук собеседника без переключения выхода ────────────
+TAP_DEVICE_NAME = "LT-System"
+TAP_DEVICE_UID = "com.livetranscriber.lt-system"
+
+
+def _output_uid() -> str | None:
+    """UID устройства, на которое macOS сейчас выводит звук."""
+    current = current_output()
+    for dev in devices():
+        if dev["name"] == current and dev["output"]:
+            return dev["uid"]
+    return None
+
+
+def tap_supported() -> bool:
+    """Умеет ли система ответвлять звук: нужна macOS 14.4 или новее."""
+    try:
+        objc.lookUpClass("CATapDescription")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def create_system_tap() -> tuple[int, int] | None:
+    """Ответвление системного звука: слушаем то же, что слышит пользователь.
+
+    Раньше для записи собеседника приходилось переключать выход на составное
+    устройство — у пользователя пропадал звук, и его приходилось возвращать
+    руками прямо на созвоне. Ответвление (process tap) ничего не переключает:
+    выход остаётся тем же, а мы получаем копию звука.
+
+    Требует macOS 14.4 и разрешения «Запись звука системы».
+    Возвращает (id ответвления, id устройства) или None.
+    """
+    try:
+        CATapDescription = objc.lookUpClass("CATapDescription")
+    except Exception:  # noqa: BLE001
+        logging.info("Ответвление звука недоступно: нужна macOS 14.4 или новее")
+        return None
+
+    output_uid = _output_uid()
+    if not output_uid:
+        logging.error("Не понял, куда идёт звук: ответвление не создать")
+        return None
+
+    desc = CATapDescription.alloc().initStereoGlobalTapButExcludeProcesses_(
+        NSMutableArray.alloc().init())
+    desc.setName_(TAP_DEVICE_NAME)
+    desc.setPrivate_(False)      # иначе устройство видно только нам, но не ffmpeg
+    desc.setMuteBehavior_(0)     # 0 — пользователь продолжает слышать звук
+    tap_uid = str(desc.UUID().UUIDString())   # обязательно в верхнем регистре
+
+    _ca.AudioHardwareCreateProcessTap.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    _ca.AudioHardwareCreateProcessTap.restype = ctypes.c_int32
+    tap_id = ctypes.c_uint32(0)
+    err = _ca.AudioHardwareCreateProcessTap(objc.pyobjc_id(desc), ctypes.byref(tap_id))
+    if err != 0:
+        logging.error("Ответвление звука не создано: код %d", err)
+        return None
+
+    sub = NSMutableDictionary.alloc().init()
+    sub.setObject_forKey_(output_uid, "uid")
+    subs = NSMutableArray.alloc().init()
+    subs.addObject_(sub)
+
+    tap_item = NSMutableDictionary.alloc().init()
+    tap_item.setObject_forKey_(tap_uid, "uid")
+    tap_item.setObject_forKey_(NSNumber.numberWithBool_(True), "drift")
+    taps = NSMutableArray.alloc().init()
+    taps.addObject_(tap_item)
+
+    desc_dict = NSMutableDictionary.alloc().init()
+    desc_dict.setObject_forKey_(TAP_DEVICE_NAME, "name")
+    desc_dict.setObject_forKey_(TAP_DEVICE_UID, "uid")
+    desc_dict.setObject_forKey_(output_uid, "master")
+    desc_dict.setObject_forKey_(NSNumber.numberWithBool_(False), "private")
+    desc_dict.setObject_forKey_(NSNumber.numberWithBool_(False), "stacked")
+    desc_dict.setObject_forKey_(NSNumber.numberWithBool_(True), "tapautostart")
+    desc_dict.setObject_forKey_(subs, "subdevices")
+    desc_dict.setObject_forKey_(taps, "taps")
+
+    _ca.AudioHardwareCreateAggregateDevice.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    _ca.AudioHardwareCreateAggregateDevice.restype = ctypes.c_int32
+    dev_id = ctypes.c_uint32(0)
+    err = _ca.AudioHardwareCreateAggregateDevice(objc.pyobjc_id(desc_dict),
+                                                 ctypes.byref(dev_id))
+    if err != 0:
+        logging.error("Устройство с ответвлением не создано: код %d", err)
+        destroy_system_tap(tap_id.value, None)
+        return None
+
+    wait_for_device(TAP_DEVICE_NAME)
+    logging.info("Ответвление звука готово (тап %d, устройство %d, выход %s)",
+                 tap_id.value, dev_id.value, output_uid)
+    return tap_id.value, dev_id.value
+
+
+def destroy_system_tap(tap_id: int | None, device_id: int | None) -> None:
+    """Порядок важен: сначала устройство, потом само ответвление."""
+    if device_id:
+        destroy_aggregate(device_id)
+    if tap_id:
+        _ca.AudioHardwareDestroyProcessTap.argtypes = [ctypes.c_uint32]
+        _ca.AudioHardwareDestroyProcessTap.restype = ctypes.c_int32
+        err = _ca.AudioHardwareDestroyProcessTap(ctypes.c_uint32(tap_id))
+        logging.info("Ответвление звука убрано (id=%d, код %d)", tap_id, err)
+
+
+def cleanup_stale_taps() -> None:
+    """Подчищаем устройство ответвления от прошлого аварийного завершения."""
+    for dev in devices():
+        if dev["uid"] == TAP_DEVICE_UID or dev["name"] == TAP_DEVICE_NAME:
+            destroy_aggregate(dev["id"])
+
+
 def destroy_aggregate(device_id: int) -> None:
     _ca.AudioHardwareDestroyAggregateDevice.argtypes = [ctypes.c_uint32]
     _ca.AudioHardwareDestroyAggregateDevice.restype = ctypes.c_int32
@@ -285,9 +421,11 @@ def is_continuity_mic(name: str) -> bool:
 
 def best_mic() -> tuple[str, str] | None:
     """Лучший микрофон: внешний или BT впереди встроенного."""
+    # Свои служебные устройства в микрофоны не годятся: ответвление системного
+    # звука тоже выглядит как вход, и запись ушла бы сама в себя
+    own = (BLACKHOLE_NAME, AGGREGATE_NAME, TAP_DEVICE_NAME)
     candidates = [(idx, name) for idx, name in av_inputs()
-                  if BLACKHOLE_NAME not in name
-                  and AGGREGATE_NAME not in name
+                  if all(mark not in name for mark in own)
                   and not is_continuity_mic(name)]
     if not candidates:
         return None
@@ -297,18 +435,34 @@ def best_mic() -> tuple[str, str] | None:
     return candidates[0]
 
 
-def capture_command(mic_index: str, blackhole_index: str | None) -> list[str]:
-    """ffmpeg: микрофон (+ системный звук) → mono PCM 16 кГц в stdout."""
+def capture_command(mic_index: str, system_index: str | None) -> tuple[list[str], int]:
+    """ffmpeg: микрофон и звук собеседника → PCM 16 кГц в stdout.
+
+    Когда звук собеседника есть, дорожки НЕ смешиваются: микрофон идёт левым
+    каналом, собеседник правым. Так расшифровка сама знает, кто говорит, и не
+    гадает по голосу — это главный источник путаницы со спикерами.
+    Возвращает команду и число каналов в потоке.
+    """
     tool = which("ffmpeg") or "ffmpeg"
     cmd = [tool, "-y", "-nostats", "-loglevel", "warning",
            "-f", "avfoundation", "-i", f":{mic_index}"]
-    if blackhole_index is not None:
-        cmd += ["-f", "avfoundation", "-i", f":{blackhole_index}",
-                "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest[out]",
+    if system_index is None:
+        cmd += ["-ac", "1"]
+        channels = 1
+    else:
+        # Каждый вход сначала сводим в моно, иначе стереовход даст лишние
+        # каналы и дорожки перестанут соответствовать «микрофон / собеседник»
+        cmd += ["-f", "avfoundation", "-i", f":{system_index}",
+                "-filter_complex",
+                "[0:a]pan=mono|c0=c0[mic];"
+                "[1:a]pan=mono|c0=0.5*c0+0.5*c1[sys];"
+                # join, а не amerge: он явно кладёт микрофон в левый канал,
+                # а собеседника в правый, не гадая по раскладке входов
+                "[mic][sys]join=inputs=2:channel_layout=stereo[out]",
                 "-map", "[out]"]
-    cmd += ["-f", "s16le", "-acodec", "pcm_s16le",
-            "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "pipe:1"]
-    return cmd
+        channels = 2
+    cmd += ["-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(SAMPLE_RATE), "pipe:1"]
+    return cmd, channels
 
 
 def probe(device_index: str, seconds: float = 2.0) -> float:
@@ -409,36 +563,61 @@ def check() -> dict:
     if not blackhole:
         return report
 
-    # Системный звук: включаем multi-output, играем тон, слушаем BlackHole
+    # Звук собеседника: ответвляем системный звук и слушаем, идёт ли по нему тон
     add("")
-    previous = current_output()
+    tap = create_system_tap()
+    previous = None
     aggregate_id = None
     try:
-        out_dev = next((d for d in devs if d["name"] == previous and d["output"]), None)
-        if out_dev:
-            aggregate_id = create_aggregate(out_dev["uid"])
-        if aggregate_id and set_output(AGGREGATE_NAME):
-            time.sleep(0.4)
-            bh_index = av_index(BLACKHOLE_NAME)
-            tone = play_tone(2.5)
-            level = probe(bh_index, 2.0) if bh_index else -1.0
-            if tone:
-                tone.terminate()
-            if level < 0:
-                add("❌ Системный звук: BlackHole не отдаёт данные")
-                report["problems"].append("BlackHole не отдаёт звук")
-                report["ok"] = False
-            elif level < SILENCE_RMS:
-                add(f"⚠️ Системный звук не доходит до BlackHole (уровень {level:.0f})")
-                report["problems"].append(
-                    "звук собеседника не пишется: multi-output не работает")
-                report["ok"] = False
-            else:
-                add(f"✅ Системный звук идёт в запись (уровень {level:.0f})")
+        if tap:
+            tap_id, tap_dev = tap
+            try:
+                time.sleep(0.4)
+                index = av_index(TAP_DEVICE_NAME)
+                tone = play_tone(2.5)
+                level = probe(index, 2.0) if index else -1.0
+                if tone:
+                    tone.terminate()
+                if level < 0:
+                    add("❌ Звук собеседника: устройство записи не отдаёт данные")
+                    report["problems"].append("ответвление звука не отдаёт данные")
+                    report["ok"] = False
+                elif level < SILENCE_RMS:
+                    add("❌ Звук собеседника не пишется")
+                    add("   Разрешите запись звука системы: Системные настройки →")
+                    add("   Конфиденциальность и безопасность → Запись экрана и звука системы")
+                    report["problems"].append(
+                        "нет разрешения на запись звука системы")
+                    report["ok"] = False
+                else:
+                    add(f"✅ Звук собеседника пишется (уровень {level:.0f})")
+                    add("   Выход звука при этом не переключается")
+            finally:
+                destroy_system_tap(tap_id, tap_dev)
         else:
-            add("❌ Не удалось включить multi-output (LT-Auto)")
-            report["problems"].append("не создаётся multi-output: звук собеседника не пишется")
-            report["ok"] = False
+            # Запасной путь для macOS старее 14.4
+            previous = current_output()
+            out_dev = next((d for d in devs if d["name"] == previous and d["output"]), None)
+            if out_dev:
+                aggregate_id = create_aggregate(out_dev["uid"])
+            if aggregate_id and set_output(AGGREGATE_NAME):
+                time.sleep(0.4)
+                bh_index = av_index(BLACKHOLE_NAME)
+                tone = play_tone(2.5)
+                level = probe(bh_index, 2.0) if bh_index else -1.0
+                if tone:
+                    tone.terminate()
+                if level < SILENCE_RMS:
+                    add("❌ Звук собеседника не пишется через BlackHole")
+                    report["problems"].append("звук собеседника не пишется")
+                    report["ok"] = False
+                else:
+                    add(f"✅ Звук собеседника пишется через BlackHole (уровень {level:.0f})")
+                    add("   На время записи выход звука переключается на LT-Auto")
+            else:
+                add("❌ Записать собеседника нечем: нужна macOS 14.4 или BlackHole")
+                report["problems"].append("нет способа записать звук собеседника")
+                report["ok"] = False
     finally:
         if previous:
             set_output(previous)
@@ -452,12 +631,14 @@ class Recorder:
     """ffmpeg пишет PCM в stdout, мы режем поток на чанки по 60 секунд."""
 
     def __init__(self, on_chunk, on_level=None, on_failure=None):
-        self.on_chunk = on_chunk          # (bytes, index) → отправка в транскрибацию
-        self.on_level = on_level          # (rms, index) → индикатор тишины
+        self.on_chunk = on_chunk          # (bytes, index, channels) → в транскрибацию
+        self.on_level = on_level          # ([уровни дорожек], index) → индикатор
         self.on_failure = on_failure      # (текст) → авария захвата
         self.proc: subprocess.Popen | None = None
         self.chunks = 0
         self.total_bytes = 0
+        self.channels = CHANNELS
+        self.chunk_bytes = CHUNK_BYTES
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._buffer = bytearray()
@@ -466,8 +647,9 @@ class Recorder:
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, mic_index: str, blackhole_index: str | None) -> bool:
-        cmd = capture_command(mic_index, blackhole_index)
+    def start(self, mic_index: str, system_index: str | None) -> bool:
+        cmd, self.channels = capture_command(mic_index, system_index)
+        self.chunk_bytes = SAMPLE_RATE * SAMPLE_WIDTH * self.channels * CHUNK_SECONDS
         logging.info("Запускаю захват: %s", " ".join(cmd))
         try:
             self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -496,11 +678,11 @@ class Recorder:
             self.total_bytes += len(data)
             with self._lock:
                 self._buffer.extend(data)
-                ready = len(self._buffer) >= CHUNK_BYTES
+                ready = len(self._buffer) >= self.chunk_bytes
                 chunk = None
                 if ready:
-                    chunk = bytes(self._buffer[:CHUNK_BYTES])
-                    del self._buffer[:CHUNK_BYTES]
+                    chunk = bytes(self._buffer[:self.chunk_bytes])
+                    del self._buffer[:self.chunk_bytes]
             if chunk:
                 self._emit(chunk)
         if not first_data and not self._stop.is_set():
@@ -517,12 +699,17 @@ class Recorder:
 
     def _emit(self, chunk: bytes) -> None:
         self.chunks += 1
-        level = rms(chunk)
-        logging.info("Чанк %d: %.0f секунд, уровень %.0f",
-                     self.chunks, len(chunk) / (SAMPLE_RATE * SAMPLE_WIDTH), level)
+        parts = levels(chunk, self.channels)
+        seconds = len(chunk) / (SAMPLE_RATE * SAMPLE_WIDTH * self.channels)
+        if self.channels > 1:
+            logging.info("Чанк %d: %.0f секунд, микрофон %.0f, собеседник %.0f",
+                         self.chunks, seconds, parts[0], parts[1])
+        else:
+            logging.info("Чанк %d: %.0f секунд, уровень %.0f",
+                         self.chunks, seconds, parts[0])
         if self.on_level:
-            self.on_level(level, self.chunks)
-        self.on_chunk(chunk, self.chunks)
+            self.on_level(parts, self.chunks)
+        self.on_chunk(chunk, self.chunks, self.channels)
 
     def stop(self) -> None:
         """Останавливаем ffmpeg и отдаём остаток буфера последним чанком."""
@@ -537,9 +724,9 @@ class Recorder:
             tail = bytes(self._buffer)
             self._buffer.clear()
         # Меньше секунды — смысла отправлять нет
-        if len(tail) > SAMPLE_RATE * SAMPLE_WIDTH:
+        if len(tail) > SAMPLE_RATE * SAMPLE_WIDTH * self.channels:
             self._emit(tail)
 
     @property
     def duration_sec(self) -> int:
-        return int(self.total_bytes / (SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS))
+        return int(self.total_bytes / (SAMPLE_RATE * SAMPLE_WIDTH * self.channels))

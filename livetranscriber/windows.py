@@ -222,7 +222,7 @@ def _panel_button(title: str, x: float, width: float, controller, action: str) -
 
 
 # ── окно старта ─────────────────────────────────────────
-def start_dialog(mic_name: str, output_name: str, blackhole_ok: bool,
+def start_dialog(mic_name: str, output_name: str, system_note: str,
                  default_prompt: str, on_start, on_check) -> None:
     """Название записи и задание для итога.
 
@@ -251,10 +251,8 @@ def start_dialog(mic_name: str, output_name: str, blackhole_ok: bool,
     prompt_scroll.setDocumentView_(prompt_view)
     content.addSubview_(prompt_scroll)
 
-    sound = ("звук собеседника пишется" if blackhole_ok
-             else "⚠️ звук собеседника НЕ пишется")
     content.addSubview_(label(f"Микрофон: {mic_name}", 16, 72, width - 32, size=11))
-    content.addSubview_(label(f"Выход: {output_name} · {sound}", 16, 56,
+    content.addSubview_(label(f"Выход: {output_name} · {system_note}", 16, 56,
                               width - 32, size=11))
 
     def begin() -> None:

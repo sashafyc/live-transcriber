@@ -30,6 +30,11 @@ setup(
                 "LSMinimumSystemVersion": "13.0",
                 "NSMicrophoneUsageDescription":
                     "Live Transcriber записывает микрофон, чтобы расшифровать разговор.",
+                # Без этого ключа система молча отдаёт тишину вместо звука
+                # собеседника: запрос разрешения даже не показывается
+                "NSAudioCaptureUsageDescription":
+                    "Live Transcriber записывает звук созвона, "
+                    "чтобы расшифровать речь собеседника.",
                 "NSHighResolutionCapable": True,
             },
         }

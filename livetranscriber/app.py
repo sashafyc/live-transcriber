@@ -37,7 +37,10 @@ class LiveTranscriber(rumps.App):
         self.started_at: float | None = None
         self.previous_output: str | None = None
         self.aggregate_id: int | None = None
+        self.tap_id: int | None = None
+        self.tap_device_id: int | None = None
         self.silent_streak = 0
+        self.quiet_other = 0
         self._busy = False
         self._stopping = False
         self._ui_tasks: list = []
@@ -59,6 +62,7 @@ class LiveTranscriber(rumps.App):
         storage.setup_logging()
         logging.info("=== %s %s запущен ===", APP_NAME, __version__)
         audio.cleanup_stale_aggregates()
+        audio.cleanup_stale_taps()
         storage.cleanup(self.cfg.get("retention_days", config.RETENTION_DAYS))
 
         signal.signal(signal.SIGTERM, self._on_signal)
@@ -123,7 +127,12 @@ class LiveTranscriber(rumps.App):
         mic = audio.best_mic()
         mic_name = mic[1] if mic else "не найден"
         output_name = audio.current_output() or "не определён"
-        blackhole_ok = audio.find_device(audio.BLACKHOLE_NAME) is not None
+        if audio.tap_supported():
+            system_note = "собеседник пишется, выход не переключается"
+        elif audio.find_device(audio.BLACKHOLE_NAME):
+            system_note = "собеседник пишется, выход переключится на LT-Auto"
+        else:
+            system_note = "⚠️ собеседник НЕ пишется"
 
         def begin(title: str, prompt: str) -> None:
             if not mic:
@@ -133,7 +142,7 @@ class LiveTranscriber(rumps.App):
                 return
             self._begin_recording(title, prompt, mic[0])
 
-        windows.start_dialog(mic_name, output_name, blackhole_ok,
+        windows.start_dialog(mic_name, output_name, system_note,
                              self.cfg.get("prompt", config.DEFAULT_PROMPT),
                              on_start=begin,
                              on_check=lambda: self.on_sound_check(None))
@@ -143,21 +152,42 @@ class LiveTranscriber(rumps.App):
         self.record.attach_log()
         logging.info("Начинаю запись «%s» → %s", title, self.record.path)
 
-        # Multi-output: слышим собеседника и одновременно пишем его в BlackHole
-        self.previous_output = audio.current_output()
+        # Звук собеседника берём ответвлением от системного звука: выход
+        # пользователя при этом не трогаем — на созвоне ничего не пропадает
+        self.previous_output = None
         self.aggregate_id = None
-        blackhole_index = None
-        if audio.find_device(audio.BLACKHOLE_NAME):
+        self.tap_id = None
+        self.tap_device_id = None
+        system_index = None
+
+        tap = audio.create_system_tap()
+        if tap:
+            self.tap_id, self.tap_device_id = tap
+            time.sleep(0.4)
+            system_index = audio.av_index(audio.TAP_DEVICE_NAME)
+            if system_index is None:
+                logging.error("Устройство ответвления не видно ffmpeg")
+                audio.destroy_system_tap(self.tap_id, self.tap_device_id)
+                self.tap_id = self.tap_device_id = None
+
+        # Запасной путь для macOS старее 14.4: составное устройство и
+        # переключение выхода. Здесь звук у пользователя меняет устройство.
+        if system_index is None and audio.find_device(audio.BLACKHOLE_NAME):
+            self.previous_output = audio.current_output()
             output_device = next((d for d in audio.devices()
                                   if d["name"] == self.previous_output and d["output"]), None)
             if output_device:
                 self.aggregate_id = audio.create_aggregate(output_device["uid"])
             if self.aggregate_id and audio.set_output(audio.AGGREGATE_NAME):
                 time.sleep(0.4)
-                blackhole_index = audio.av_index(audio.BLACKHOLE_NAME)
+                system_index = audio.av_index(audio.BLACKHOLE_NAME)
+                if system_index is not None:
+                    self.notify("Звук переключён на LT-Auto",
+                                "Так пишется собеседник. После остановки вернём как было.")
             else:
-                logging.error("Multi-output не включился: пишем только микрофон")
-        if blackhole_index is None:
+                logging.error("Составное устройство не включилось")
+
+        if system_index is None:
             self.notify("Пишу только микрофон",
                         "Звук собеседника в запись не попадёт. Проверьте звук в меню.")
 
@@ -168,13 +198,14 @@ class LiveTranscriber(rumps.App):
         self.recorder = audio.Recorder(on_chunk=self._on_chunk,
                                        on_level=self._on_level,
                                        on_failure=self._on_capture_failure)
-        if not self.recorder.start(mic_index, blackhole_index):
+        if not self.recorder.start(mic_index, system_index):
             self._restore_audio()
             windows.info("Не удалось начать запись", "Подробности в логе приложения.")
             return
 
         self.started_at = time.time()
         self.silent_streak = 0
+        self.quiet_other = 0
         self._stopping = False
         self.title = ICON_RECORDING
         self.menu[MENU_START].set_callback(None)
@@ -182,9 +213,9 @@ class LiveTranscriber(rumps.App):
         self.notify("Запись идёт", f"«{title}». Остановить — в меню строки состояния.")
 
     # ── события записи ──────────────────────────────────
-    def _on_chunk(self, pcm: bytes, index: int) -> None:
+    def _on_chunk(self, pcm: bytes, index: int, channels: int = 1) -> None:
         if self.pipeline:
-            self.pipeline.submit(pcm, index)
+            self.pipeline.submit(pcm, index, channels)
 
     def _on_text(self, text: str, index: int) -> None:
         if self.record:
@@ -194,21 +225,38 @@ class LiveTranscriber(rumps.App):
         if index == 1:
             self.ui(lambda: self.notify("Транскрибация не идёт", message[:180]))
 
-    def _on_level(self, level: float, index: int) -> None:
+    def _on_level(self, parts: list, index: int) -> None:
         # Последний кусок приходит уже после нажатия «Остановить»: значок к тому
         # моменту показывает обработку, и возвращать его в запись нельзя
         if self._stopping or not self.started_at:
             return
-        if level < audio.SILENCE_RMS:
+        mic = parts[0] if parts else 0.0
+        if mic < audio.SILENCE_RMS:
             self.silent_streak += 1
             self.ui(lambda: setattr(self, "title", ICON_SILENT))
             if self.silent_streak == 2:
                 self.ui(lambda: self.notify(
                     "Две минуты тишины",
-                    "Запись идёт, но звука нет. Проверьте микрофон и вывод звука."))
+                    "Запись идёт, но микрофон молчит. Проверьте вход звука."))
         else:
             self.silent_streak = 0
             self.ui(lambda: setattr(self, "title", ICON_RECORDING))
+        # Дорожка собеседника меряется отдельно: раньше его тишину заглушал
+        # громкий микрофон, и половина разговора терялась незаметно
+        if len(parts) > 1:
+            if parts[1] < audio.SILENCE_RMS:
+                self.quiet_other += 1
+                if self.quiet_other == 2:
+                    # Отказ в разрешении на запись звука системы выглядит как
+                    # обычная тишина: ошибки нет, просто пустая дорожка
+                    hint = ("Разрешите запись звука системы в настройках: "
+                            "Конфиденциальность и безопасность → "
+                            "Запись экрана и звука системы."
+                            if self.tap_id else
+                            "Проверьте звук через меню приложения.")
+                    self.ui(lambda: self.notify("Собеседника не слышно", hint))
+            else:
+                self.quiet_other = 0
 
     def _on_capture_failure(self, message: str) -> None:
         logging.error("Захват сорвался: %s", message)
@@ -304,6 +352,9 @@ class LiveTranscriber(rumps.App):
             on_copy=lambda: self.notify("Скопировано", "Итог в буфере обмена"))
 
     def _restore_audio(self) -> None:
+        if self.tap_id or self.tap_device_id:
+            audio.destroy_system_tap(self.tap_id, self.tap_device_id)
+            self.tap_id = self.tap_device_id = None
         if self.previous_output:
             audio.set_output(self.previous_output)
             self.previous_output = None
@@ -371,6 +422,7 @@ class LiveTranscriber(rumps.App):
         finally:
             self._restore_audio()
             audio.cleanup_stale_aggregates()
+            audio.cleanup_stale_taps()
             logging.info("=== %s остановлен ===", APP_NAME)
             rumps.quit_application()
 
