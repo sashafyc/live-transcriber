@@ -195,12 +195,32 @@ def _strip_invented(text: str) -> str:
     return re.sub(r"\s{2,}", " ", cleaned).strip(" .,")
 
 
+# Осколки титров, когда распознавание раскрошило их на отдельные слова.
+# В живой речи такие куски сами по себе не встречаются: слово «субтитры»,
+# одинокая должность или инициал с фамилией без всякого предложения.
+_SHARD_SUBTITLE = re.compile(r"субтитр", re.IGNORECASE)
+_SHARD_ROLE = re.compile(r"^(редактор|корректор)$", re.IGNORECASE)
+_SHARD_NAME = re.compile(r"^[А-ЯЁ]\.\s*[А-ЯЁ][а-яё]+$")
+
+
+def _shard(text: str) -> bool:
+    words = text.replace(",", " ").split()
+    if not words or len(words) > 4:
+        return False
+    if any(_SHARD_SUBTITLE.search(w) for w in words):
+        return True
+    if len(words) <= 3 and any(_SHARD_ROLE.match(w) or _SHARD_NAME.match(w)
+                               for w in words):
+        return True
+    return False
+
+
 def _invented(text: str) -> bool:
-    """Реплика целиком состоит из выдуманных титров."""
+    """Реплика целиком состоит из выдуманных титров или их осколков."""
     words = text.split()
     if not words or len(words) > INVENTED_LIMIT:
         return False
-    return not _strip_invented(text)
+    return not _strip_invented(text) or _shard(text)
 
 
 MIC_CHANNEL = "1"
@@ -246,60 +266,152 @@ ECHO_SHORT_WORDS = 3
 
 
 def _drop_echo(items: list[dict]) -> list[dict]:
-    """Убирает голос собеседника, попавший в микрофон через динамики.
+    """Убирает то, что просочилось с одной дорожки на другую.
 
-    Без наушников речь собеседника слышна обеим дорожкам, и разговор в
-    расшифровке двоится. Сначала ищем явные повторы. Если они есть, значит
-    звук из динамиков действительно протекает в микрофон, и тогда убираем
-    ещё и короткие обрывки, сказанные поверх чужой речи. Когда повторов нет
-    (пользователь в наушниках), короткие реплики остаются нетронутыми.
+    Речь собеседника из динамиков слышна микрофону, а речь пользователя
+    отражается в дорожку системного звука. В расшифровке это выглядит как
+    обрывки, приписанные не тому человеку. Из двух совпавших кусков оставляем
+    более полный: короткий — почти всегда отражение.
     """
-    others = [u for u in items if str(u.get("channel") or "") != MIC_CHANNEL]
-    if not others:
+    by_channel: dict[str, list[dict]] = {}
+    for u in items:
+        by_channel.setdefault(str(u.get("channel") or ""), []).append(u)
+    if len(by_channel) < 2:
         return items
 
-    def repeats(u: dict) -> bool:
-        return any(_overlaps(u, o)
-                   and _similar(u.get("text", ""), o.get("text", "")) >= ECHO_SIMILARITY
-                   for o in others)
+    def size(u: dict) -> int:
+        return len(_words(u.get("text", "")))
 
-    mine = [u for u in items if str(u.get("channel") or "") == MIC_CHANNEL]
-    leaking = sum(1 for u in mine if repeats(u)) >= 2
+    drop: set[int] = set()
+    for channel, chunks in by_channel.items():
+        others = [u for key, lst in by_channel.items() if key != channel for u in lst]
+        for u in chunks:
+            mine = _words(u.get("text", ""))
+            if not mine:
+                continue
+            for o in others:
+                if id(o) in drop or not _overlaps(u, o):
+                    continue
+                theirs = _words(o.get("text", ""))
+                if not theirs or size(u) > size(o):
+                    continue
+                # Чужая фраза целиком содержит нашу, либо они совпадают
+                if mine <= theirs or (size(u) <= ECHO_SHORT_WORDS and mine & theirs) \
+                        or _similar(u.get("text", ""), o.get("text", "")) >= ECHO_SIMILARITY:
+                    drop.add(id(u))
+                    break
+    if drop:
+        logging.info("Убрал отражения между дорожками: %d кусков", len(drop))
+    return [u for u in items if id(u) not in drop]
 
-    kept, dropped = [], 0
+
+def _name_for(channel: str, speaker: str, others: dict) -> str:
+    if channel == MIC_CHANNEL:
+        return ME
+    return others.get(speaker, OTHER)
+
+
+def _voices_on_mic(items: list[dict]) -> dict:
+    """Имена голосов на дорожке микрофона.
+
+    Когда собеседник говорит по громкой связи или сидит рядом, его голос
+    попадает в тот же микрофон. Звать всех «Я» неправильно, поэтому самый
+    говорящий остаётся хозяином микрофона, остальные становятся собеседниками.
+    """
+    totals: dict[str, int] = {}
     for u in items:
-        if str(u.get("channel") or "") != MIC_CHANNEL:
-            kept.append(u)
+        key = str(u.get("speaker") or "")
+        totals[key] = totals.get(key, 0) + len(u.get("text") or "")
+    if len(totals) < 2:
+        return {}
+    main = max(totals, key=lambda k: totals[k])
+    rest = sorted(k for k in totals if k != main)
+    names = {main: ME}
+    for index, speaker in enumerate(rest):
+        names[speaker] = OTHER if len(rest) == 1 else f"{OTHER} {chr(ord('A') + index)}"
+    return names
+
+
+def _merge(pairs: list[tuple[str, str]]) -> str:
+    """Соседние куски одного голоса снова становятся репликой."""
+    lines: list[list[str]] = []
+    for name, text in pairs:
+        text = (text or "").strip()
+        if not text:
             continue
-        short_over_speech = (leaking
-                             and len(_words(u.get("text", ""))) <= ECHO_SHORT_WORDS
-                             and any(_overlaps(u, o) for o in others))
-        if repeats(u) or short_over_speech:
-            dropped += 1
+        if lines and lines[-1][0] == name:
+            lines[-1].append(text)
         else:
-            kept.append(u)
-    if dropped:
-        logging.info("Убрал из микрофона %d кусков эха динамиков", dropped)
-    return kept
+            lines.append([name, text])
+    out = []
+    for parts in lines:
+        body = _strip_invented(" ".join(parts[1:]))
+        if body:
+            out.append(f"**{parts[0]}:** {body}")
+    return "\n".join(out)
+
+
+GROUP_PAUSE_MS = 2000
+
+
+def _without_invented(items: list[dict]) -> list[dict]:
+    """Убирает титры, даже когда они разорваны на отдельные слова.
+
+    Речь приходит мелкими кусками вперемешку с другой дорожкой, поэтому
+    «Редактор», «субтитров» и «А.Семкин» поодиночке ни на что не похожи.
+    Собираем куски одной дорожки, идущие подряд, и судим по фразе целиком.
+    """
+    tracks: dict[str, list[dict]] = {}
+    for u in items:
+        key = str(u.get("channel") or u.get("speaker") or "")
+        tracks.setdefault(key, []).append(u)
+
+    drop: set[int] = set()
+    for chunks in tracks.values():
+        chunks.sort(key=lambda u: u.get("start", 0))
+        group: list[dict] = []
+
+        def judge(group: list[dict]) -> None:
+            if not group:
+                return
+            phrase = " ".join((u.get("text") or "").strip() for u in group)
+            if _invented(phrase):
+                drop.update(id(u) for u in group)
+
+        for u in chunks:
+            if group and u.get("start", 0) - group[-1].get("end", 0) <= GROUP_PAUSE_MS:
+                group.append(u)
+            else:
+                judge(group)
+                group = [u]
+        judge(group)
+    if drop:
+        logging.info("Убрал выдуманные титры: %d кусков", len(drop))
+    return [u for u in items if id(u) not in drop]
 
 
 def _format(data: dict, only: str | None = None) -> str:
     items = data.get("utterances")
     if not items:
         return (data.get("text") or "").strip()
-    items = [u for u in items if not _invented((u.get("text") or "").strip())]
+    items = _without_invented(items)
     if not items:
         return ""
-    if only:
-        # Дорожка одна и мы знаем, чья она: голоса различать не по чему
-        text = " ".join((u.get("text") or "").strip() for u in items).strip()
-        return f"**{only}:** {text}" if text else ""
+    items = sorted(items, key=lambda u: u.get("start", 0))
 
-    multi = bool(data.get("audio_channels", 1) and int(data.get("audio_channels", 1)) > 1)
+    if only:
+        # Дорожка одна, и мы знаем, чья она. Но голосов на ней может быть
+        # несколько: собеседник на громкой связи звучит в тот же микрофон.
+        names = _voices_on_mic(items) if only == ME else {}
+        if not names:
+            return _merge([(only, u.get("text", "")) for u in items])
+        return _merge([(names.get(str(u.get("speaker") or ""), only), u.get("text", ""))
+                       for u in items])
+
+    multi = int(data.get("audio_channels", 1) or 1) > 1
     if multi:
         items = _drop_echo(items)
 
-    # Метка вида «1A» означает дорожку 1 и спикера A внутри неё
     def split(u: dict) -> tuple[str, str]:
         channel = str(u.get("channel") or "")
         speaker = str(u.get("speaker") or "")
@@ -307,32 +419,25 @@ def _format(data: dict, only: str | None = None) -> str:
             channel, speaker = speaker[:1], speaker[1:]
         return channel, speaker
 
-    voices = {s for c, s in map(split, items) if c != MIC_CHANNEL and s}
-    items = sorted(items, key=lambda u: u.get("start", 0))
+    if not multi:
+        return _merge([(f"Спикер {split(u)[1] or '?'}", u.get("text", "")) for u in items])
 
-    # Разбор по дорожкам возвращает речь мелкими кусками, иногда по одному
-    # слову. Читать такое невозможно, поэтому соседние куски одного голоса
-    # снова собираются в реплику.
-    lines: list[list[str]] = []
-    last_name = None
+    voices = {s for c, s in map(split, items) if c != MIC_CHANNEL and s}
+    others = {}
+    if len(voices) > 1:
+        others = {s: f"{OTHER} {s}" for s in sorted(voices)}
+    mic_items = [u for u in items if split(u)[0] == MIC_CHANNEL]
+    mic_names = _voices_on_mic(mic_items)
+
+    pairs = []
     for u in items:
         channel, speaker = split(u)
-        name = _speaker_name(channel, speaker, len(voices) > 1) if multi \
-            else f"Спикер {speaker or '?'}"
-        text = (u.get("text") or "").strip()
-        if not text:
-            continue
-        if name == last_name:
-            lines[-1].append(text)
+        if channel == MIC_CHANNEL and mic_names:
+            name = mic_names.get(speaker, ME)
         else:
-            lines.append([name, text])
-            last_name = name
-    out = []
-    for parts in lines:
-        body = _strip_invented(" ".join(parts[1:]))
-        if body:
-            out.append(f"**{parts[0]}:** {body}")
-    return "\n".join(out)
+            name = _name_for(channel, speaker, others)
+        pairs.append((name, u.get("text", "")))
+    return _merge(pairs)
 
 
 class ChunkPipeline:
