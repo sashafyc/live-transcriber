@@ -5,6 +5,7 @@ from __future__ import annotations
 import array
 import io
 import logging
+import math
 import os
 import re
 import subprocess
@@ -15,7 +16,7 @@ import wave
 import requests
 
 from .audio import (CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH, SILENCE_RMS,
-                    levels, which)
+                    SPEECH_RMS, levels, which)
 
 API_BASE = "https://api.assemblyai.com/v2"
 POLL_INTERVAL = 3
@@ -149,6 +150,77 @@ def _trim_silence(pcm: bytes, channels: int) -> bytes:
     return trimmed
 
 
+BLEED_FRAME_MS = 20          # кадр, которым меряем просачивание
+BLEED_SPREAD = 5             # ±100 мс: столько звук идёт от колонок до микрофона
+BLEED_MARGIN = 3.0           # во столько раз своя речь громче просочившейся
+BLEED_LINK = 0.25            # связь громкостей, выше которой дорожки слышат друг друга
+
+
+def _duck_bleed(pcm: bytes, channels: int) -> bytes:
+    """Глушит в микрофоне то, что он услышал из колонок.
+
+    Когда собеседник звучит не в наушниках, микрофон пишет его вместе с
+    хозяином. Дорожки распознаются порознь, и одна и та же речь возвращается
+    дважды разными словами — расшифровка превращается в кашу из чередующихся
+    обрывков. Отсев по тексту тут бессилен: слова-то разные. Поэтому режем по
+    звуку — кадры, где микрофон лишь повторяет собеседника, но тише него.
+
+    Своя речь громче просочившейся в разы, поэтому она остаётся.
+    """
+    if channels != 2 or not pcm:
+        return pcm
+    size = int(SAMPLE_RATE * BLEED_FRAME_MS / 1000)
+    samples = array.array("h")
+    samples.frombytes(pcm[:len(pcm) // 4 * 4])
+    mic, other = samples[0::2], samples[1::2]
+    if len(mic) < size * 2:
+        return pcm
+
+    def envelope(track: array.array) -> list[float]:
+        return [math.sqrt(sum(float(v) * v for v in track[i:i + size]) / size)
+                for i in range(0, len(track) - size + 1, size)]
+
+    heard = envelope(mic)
+    played = envelope(other)
+    count = min(len(heard), len(played))
+    # Громкость собеседника берём с запасом по времени: звук доходит до
+    # микрофона с задержкой, и кадры дорожек не совпадают ровно
+    near = [max(played[max(0, i - BLEED_SPREAD):i + BLEED_SPREAD + 1])
+            for i in range(count)]
+    if _link(heard[:count], near) < BLEED_LINK:
+        return pcm                      # наушники: микрофон живёт сам по себе
+
+    ratios = sorted(heard[i] / near[i] for i in range(count) if near[i] >= SPEECH_RMS)
+    if not ratios:
+        return pcm
+    gain = ratios[len(ratios) // 2]
+    muted = 0
+    for i in range(count):
+        if near[i] < SPEECH_RMS or heard[i] >= near[i] * gain * BLEED_MARGIN:
+            continue
+        mic[i * size:(i + 1) * size] = array.array("h", bytes(size * 2))
+        muted += 1
+    if not muted:
+        return pcm
+    logging.info("Микрофон слышит колонки (в %.2f от собеседника), "
+                 "заглушил %.0f из %.0f секунд",
+                 gain, muted * BLEED_FRAME_MS / 1000, count * BLEED_FRAME_MS / 1000)
+    samples[0::2] = mic
+    return samples.tobytes()
+
+
+def _link(first: list[float], second: list[float]) -> float:
+    """Насколько похоже меняется громкость двух дорожек."""
+    count = len(first)
+    if count < 2:
+        return 0.0
+    mean_a, mean_b = sum(first) / count, sum(second) / count
+    top = sum((first[i] - mean_a) * (second[i] - mean_b) for i in range(count))
+    side_a = math.sqrt(sum((v - mean_a) ** 2 for v in first))
+    side_b = math.sqrt(sum((v - mean_b) ** 2 for v in second))
+    return top / (side_a * side_b) if side_a and side_b else 0.0
+
+
 def _single_track(pcm: bytes, channels: int) -> tuple[bytes, int, str | None]:
     """Если одна дорожка пустая, оставляем только вторую.
 
@@ -178,6 +250,7 @@ def transcribe(pcm: bytes, api_key: str, language: str = "ru",
     if not api_key:
         raise TranscribeError("не задан ключ AssemblyAI")
 
+    pcm = _duck_bleed(pcm, channels)
     pcm, channels, only = _single_track(pcm, channels)
     pcm = _trim_silence(pcm, channels)
     if not pcm:
