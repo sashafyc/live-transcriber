@@ -1,6 +1,6 @@
 # Live Transcriber
 
-![версия](https://img.shields.io/badge/версия-1.1.0-blue) ![платформа](https://img.shields.io/badge/платформа-macOS%2013%2B-lightgrey)
+![версия](https://img.shields.io/badge/версия-1.1.1-blue) ![платформа](https://img.shields.io/badge/платформа-macOS%2013%2B-lightgrey)
 
 Приложение в строке меню macOS: пишет созвон вместе со звуком собеседника,
 расшифровывает речь, делает итог и присылает его в Telegram.
