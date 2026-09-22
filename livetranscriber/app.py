@@ -140,14 +140,14 @@ class LiveTranscriber(rumps.App):
                              "Подключите микрофон и проверьте разрешение "
                              "в настройках системы.")
                 return
-            self._begin_recording(title, prompt, mic[0])
+            self._begin_recording(title, prompt, mic[1])
 
         windows.start_dialog(mic_name, output_name, system_note,
                              self.cfg.get("prompt", config.DEFAULT_PROMPT),
                              on_start=begin,
                              on_check=lambda: self.on_sound_check(None))
 
-    def _begin_recording(self, title: str, prompt: str, mic_index: str) -> None:
+    def _begin_recording(self, title: str, prompt: str, mic_name: str) -> None:
         self.record = storage.Record.create(title, prompt)
         self.record.attach_log()
         logging.info("Начинаю запись «%s» → %s", title, self.record.path)
@@ -164,7 +164,7 @@ class LiveTranscriber(rumps.App):
         if tap:
             self.tap_id, self.tap_device_id = tap
             time.sleep(0.4)
-            system_index = audio.av_index(audio.TAP_DEVICE_NAME)
+            system_index = audio.av_spec(audio.TAP_DEVICE_NAME)
             if system_index is None:
                 logging.error("Устройство ответвления не видно ffmpeg")
                 audio.destroy_system_tap(self.tap_id, self.tap_device_id)
@@ -180,7 +180,7 @@ class LiveTranscriber(rumps.App):
                 self.aggregate_id = audio.create_aggregate(output_device["uid"])
             if self.aggregate_id and audio.set_output(audio.AGGREGATE_NAME):
                 time.sleep(0.4)
-                system_index = audio.av_index(audio.BLACKHOLE_NAME)
+                system_index = audio.av_spec(audio.BLACKHOLE_NAME)
                 if system_index is not None:
                     self.notify("Звук переключён на LT-Auto",
                                 "Так пишется собеседник. После остановки вернём как было.")
@@ -198,7 +198,18 @@ class LiveTranscriber(rumps.App):
         self.recorder = audio.Recorder(on_chunk=self._on_chunk,
                                        on_level=self._on_level,
                                        on_failure=self._on_capture_failure)
-        if not self.recorder.start(mic_index, system_index):
+        # Набор устройств мог измениться, пока было открыто окно записи,
+        # поэтому микрофон ищем заново прямо перед запуском
+        mic_spec = audio.av_spec(mic_name)
+        logging.info("Входы: %s", ", ".join(n for _, n in audio.av_inputs()))
+        logging.info("Пишу микрофон «%s», собеседника «%s»", mic_spec, system_index)
+        if mic_spec is None:
+            self._restore_audio()
+            windows.info("Микрофон пропал",
+                         f"Устройство «{mic_name}» больше не подключено.")
+            return
+
+        if not self.recorder.start(mic_spec, system_index):
             self._restore_audio()
             windows.info("Не удалось начать запись", "Подробности в логе приложения.")
             return

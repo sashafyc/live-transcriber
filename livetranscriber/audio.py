@@ -407,6 +407,24 @@ def av_inputs() -> list[tuple[str, str]]:
     return result
 
 
+def av_spec(name: str) -> str | None:
+    """Как назвать устройство для ffmpeg: именем, а не номером.
+
+    Номера входов живут ровно до следующего изменения набора устройств.
+    22.09.2026 из-за этого пропала запись целого созвона: между выбором
+    микрофона и запуском записи подключился микрофон телефона, номера
+    сдвинулись, и вместо микрофона писалась пустая виртуальная звуковая карта.
+    Имя устройства так не подводит.
+    """
+    if not name:
+        return None
+    if ":" in name:                      # двоеточие разделяет видео и звук
+        return av_index(name)
+    if any(n == name for _, n in av_inputs()):
+        return name
+    return av_index(name)
+
+
 def av_index(name_part: str) -> str | None:
     for idx, name in av_inputs():
         if name_part in name:
@@ -435,7 +453,7 @@ def best_mic() -> tuple[str, str] | None:
     return candidates[0]
 
 
-def capture_command(mic_index: str, system_index: str | None) -> tuple[list[str], int]:
+def capture_command(mic: str, system: str | None) -> tuple[list[str], int]:
     """ffmpeg: микрофон и звук собеседника → PCM 16 кГц в stdout.
 
     Когда звук собеседника есть, дорожки НЕ смешиваются: микрофон идёт левым
@@ -445,14 +463,14 @@ def capture_command(mic_index: str, system_index: str | None) -> tuple[list[str]
     """
     tool = which("ffmpeg") or "ffmpeg"
     cmd = [tool, "-y", "-nostats", "-loglevel", "warning",
-           "-f", "avfoundation", "-i", f":{mic_index}"]
-    if system_index is None:
+           "-f", "avfoundation", "-i", f":{mic}"]
+    if system is None:
         cmd += ["-ac", "1"]
         channels = 1
     else:
         # Каждый вход сначала сводим в моно, иначе стереовход даст лишние
         # каналы и дорожки перестанут соответствовать «микрофон / собеседник»
-        cmd += ["-f", "avfoundation", "-i", f":{system_index}",
+        cmd += ["-f", "avfoundation", "-i", f":{system}",
                 "-filter_complex",
                 "[0:a]pan=mono|c0=c0[mic];"
                 "[1:a]pan=mono|c0=0.5*c0+0.5*c1[sys];"
@@ -573,7 +591,7 @@ def check() -> dict:
             tap_id, tap_dev = tap
             try:
                 time.sleep(0.4)
-                index = av_index(TAP_DEVICE_NAME)
+                index = av_spec(TAP_DEVICE_NAME)
                 tone = play_tone(2.5)
                 level = probe(index, 2.0) if index else -1.0
                 if tone:
@@ -602,7 +620,7 @@ def check() -> dict:
                 aggregate_id = create_aggregate(out_dev["uid"])
             if aggregate_id and set_output(AGGREGATE_NAME):
                 time.sleep(0.4)
-                bh_index = av_index(BLACKHOLE_NAME)
+                bh_index = av_spec(BLACKHOLE_NAME)
                 tone = play_tone(2.5)
                 level = probe(bh_index, 2.0) if bh_index else -1.0
                 if tone:
@@ -639,6 +657,9 @@ class Recorder:
         self.total_bytes = 0
         self.channels = CHANNELS
         self.chunk_bytes = CHUNK_BYTES
+        self._mic = ""
+        self._system: str | None = None
+        self._retried = False
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._buffer = bytearray()
@@ -647,8 +668,9 @@ class Recorder:
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, mic_index: str, system_index: str | None) -> bool:
-        cmd, self.channels = capture_command(mic_index, system_index)
+    def start(self, mic: str, system: str | None) -> bool:
+        self._mic, self._system = mic, system
+        cmd, self.channels = capture_command(mic, system)
         self.chunk_bytes = SAMPLE_RATE * SAMPLE_WIDTH * self.channels * CHUNK_SECONDS
         logging.info("Запускаю захват: %s", " ".join(cmd))
         try:
@@ -665,17 +687,74 @@ class Recorder:
         return True
 
     def _read_audio(self) -> None:
+        # Мёртвый микрофон однажды стоил целого созвона, поэтому первые
+        # секунды проверяются отдельно и захват можно перезапустить
+        while True:
+            silent_mic = self._pump()
+            if not silent_mic or self._stop.is_set():
+                break
+            if self._retried:
+                logging.error("Микрофон «%s» молчит и после перезапуска", self._mic)
+                if self.on_failure:
+                    self.on_failure(
+                        f"Микрофон «{self._mic}» не пишется. Запись идёт, но "
+                        "ваши слова в неё не попадают. Проверьте вход звука.")
+                break
+            self._retried = True
+            logging.error("Микрофон «%s» не отдаёт звук, перезапускаю захват",
+                          self._mic)
+            if not self._restart():
+                break
+
+    def _restart(self) -> bool:
+        """Заново ищем устройства: их набор мог измениться после старта."""
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        with self._lock:
+            self._buffer.clear()
+        mic = av_spec(self._mic) or self._mic
+        system = None
+        if self._system:
+            system = av_spec(TAP_DEVICE_NAME) or av_spec(BLACKHOLE_NAME)
+        cmd, self.channels = capture_command(mic, system)
+        self.chunk_bytes = SAMPLE_RATE * SAMPLE_WIDTH * self.channels * CHUNK_SECONDS
+        logging.info("Перезапуск захвата: микрофон «%s», собеседник «%s»", mic, system)
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE)
+        except Exception:  # noqa: BLE001
+            logging.exception("перезапуск захвата не удался")
+            return False
+        threading.Thread(target=self._read_errors, daemon=True).start()
+        return True
+
+    def _pump(self) -> bool:
+        """Читает поток до конца. Возвращает True, если микрофон молчал."""
         stream = self.proc.stdout
         first_data = False
         started = time.time()
+        checked = False
+        probe = bytearray()
         while not self._stop.is_set():
             data = stream.read(READ_SIZE)
             if not data:
                 break
             if not first_data:
                 first_data = True
-                logging.info("Первые данные с микрофона через %.1f с", time.time() - started)
+                logging.info("Первые данные со звука через %.1f с", time.time() - started)
             self.total_bytes += len(data)
+            if not checked:
+                probe.extend(data)
+                # Ровный ноль — это не тишина в комнате, а неработающее
+                # устройство: живой микрофон всегда даёт хотя бы шум
+                if len(probe) >= SAMPLE_RATE * SAMPLE_WIDTH * self.channels * 5:
+                    checked = True
+                    if levels(bytes(probe), self.channels)[0] <= 0.0:
+                        return True
             with self._lock:
                 self._buffer.extend(data)
                 ready = len(self._buffer) >= self.chunk_bytes
@@ -690,6 +769,7 @@ class Recorder:
             if self.on_failure:
                 self.on_failure("Захват звука не запустился. "
                                 "Помогает: sudo killall coreaudiod")
+        return False
 
     def _read_errors(self) -> None:
         for raw in iter(self.proc.stderr.readline, b""):
