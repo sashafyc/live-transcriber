@@ -36,6 +36,9 @@ AGGREGATE_UID = "com.livetranscriber.lt-auto"
 # Тишиной считаем чанк с уровнем ниже порога. Уровень меряется по каждой
 # дорожке отдельно, поэтому порог обычный.
 SILENCE_RMS = 15
+# Порог, выше которого звук похож на речь, а не на шум комнаты.
+# Нужен для отчёта «сколько времени на дорожке реально говорили».
+SPEECH_RMS = 150
 
 _ca = ctypes.cdll.LoadLibrary(
     "/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
@@ -100,6 +103,78 @@ def rms(pcm: bytes) -> float:
         return 0.0
     total = sum(float(v) * v for v in samples)
     return math.sqrt(total / len(samples))
+
+
+def compress_raw(raw_path: str, out_path: str, channels: int) -> bool:
+    """Сырая дорожка → FLAC. Тот же звук, места втрое меньше."""
+    tool = which("ffmpeg")
+    if not tool or not os.path.exists(raw_path):
+        return False
+    cmd = [tool, "-y", "-nostats", "-loglevel", "error",
+           "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", str(channels),
+           "-i", raw_path, "-codec:a", "flac", "-compression_level", "8", out_path]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=600)
+        if done.returncode == 0 and os.path.exists(out_path):
+            os.remove(raw_path)
+            logging.info("Звук записи сохранён: %s (%.0f МБ)",
+                         out_path, os.path.getsize(out_path) / 1e6)
+            return True
+        logging.error("Сжатие звука не удалось: %s",
+                      done.stderr.decode("utf-8", errors="replace")[:200])
+    except Exception:  # noqa: BLE001
+        logging.exception("сжатие звука сорвалось")
+    return False
+
+
+def decode_audio(path: str, channels: int = 2) -> bytes:
+    """Сохранённый звук записи → сырые отсчёты для повторной расшифровки."""
+    tool = which("ffmpeg")
+    if not tool or not os.path.exists(path):
+        return b""
+    cmd = [tool, "-nostats", "-loglevel", "error", "-i", path,
+           "-f", "s16le", "-acodec", "pcm_s16le",
+           "-ar", str(SAMPLE_RATE), "-ac", str(channels), "pipe:1"]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=600)
+        if done.returncode == 0:
+            return done.stdout
+        logging.error("Не прочитать звук записи: %s",
+                      done.stderr.decode("utf-8", errors="replace")[:200])
+    except Exception:  # noqa: BLE001
+        logging.exception("чтение звука записи сорвалось")
+    return b""
+
+
+def audio_channels(path: str) -> int:
+    """Сколько дорожек в сохранённом звуке."""
+    tool = which("ffprobe") or which("ffmpeg")
+    if not tool or not os.path.exists(path):
+        return 2
+    if tool.endswith("ffprobe"):
+        done = run([tool, "-v", "error", "-select_streams", "a:0",
+                    "-show_entries", "stream=channels", "-of", "csv=p=0", path], timeout=20)
+        digits = "".join(c for c in done[1] if c.isdigit())
+        return int(digits) if digits else 2
+    return 2
+
+
+def speech_share(pcm: bytes, channels: int, channel: int = 0) -> float:
+    """Какая доля записи на дорожке — звук, а не тишина.
+
+    Отличает «собеседник говорил мало» от «писался громкий шум»: у шума
+    доля близка к единице при любом уровне, у разговора — заметно меньше.
+    """
+    if not pcm:
+        return 0.0
+    step = SAMPLE_RATE * SAMPLE_WIDTH * channels  # секунда
+    loud = total = 0
+    for start in range(0, len(pcm) - step, step):
+        part = pcm[start:start + step]
+        if levels(part, channels)[channel] >= SPEECH_RMS:
+            loud += 1
+        total += 1
+    return loud / total if total else 0.0
 
 
 def levels(pcm: bytes, channels: int) -> list[float]:
@@ -660,6 +735,9 @@ class Recorder:
         self._mic = ""
         self._system: str | None = None
         self._retried = False
+        # Без сохранённого звука разбирать жалобы на плохую расшифровку нечем,
+        # и переделать её тоже нельзя
+        self._raw = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._buffer = bytearray()
@@ -668,8 +746,14 @@ class Recorder:
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, mic: str, system: str | None) -> bool:
+    def start(self, mic: str, system: str | None, raw_path: str | None = None) -> bool:
         self._mic, self._system = mic, system
+        if raw_path and self._raw is None:
+            try:
+                self._raw = open(raw_path, "wb")
+                logging.info("Пишу звук в файл: %s", raw_path)
+            except Exception:  # noqa: BLE001
+                logging.exception("не удалось открыть файл для звука")
         cmd, self.channels = capture_command(mic, system)
         self.chunk_bytes = SAMPLE_RATE * SAMPLE_WIDTH * self.channels * CHUNK_SECONDS
         logging.info("Запускаю захват: %s", " ".join(cmd))
@@ -747,6 +831,12 @@ class Recorder:
                 first_data = True
                 logging.info("Первые данные со звука через %.1f с", time.time() - started)
             self.total_bytes += len(data)
+            if self._raw:
+                try:
+                    self._raw.write(data)
+                except Exception:  # noqa: BLE001
+                    logging.exception("запись звука в файл сорвалась")
+                    self._raw = None
             if not checked:
                 probe.extend(data)
                 # Ровный ноль — это не тишина в комнате, а неработающее
@@ -806,6 +896,12 @@ class Recorder:
         # Меньше секунды — смысла отправлять нет
         if len(tail) > SAMPLE_RATE * SAMPLE_WIDTH * self.channels:
             self._emit(tail)
+        if self._raw:
+            try:
+                self._raw.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._raw = None
 
     @property
     def duration_sec(self) -> int:

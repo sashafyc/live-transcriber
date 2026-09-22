@@ -209,7 +209,8 @@ class LiveTranscriber(rumps.App):
                          f"Устройство «{mic_name}» больше не подключено.")
             return
 
-        if not self.recorder.start(mic_spec, system_index):
+        if not self.recorder.start(mic_spec, system_index,
+                                   raw_path=self.record.raw_audio_path):
             self._restore_audio()
             windows.info("Не удалось начать запись", "Подробности в логе приложения.")
             return
@@ -290,6 +291,8 @@ class LiveTranscriber(rumps.App):
             recorder.stop()
             self._restore_audio()
             record.write_meta({"duration_sec": duration, "status": "транскрибация"})
+            threading.Thread(target=self._keep_audio, args=(record, recorder.channels),
+                             daemon=True).start()
             self.ui(lambda: self.notify("Расшифровываю",
                                         "Осталось дождаться последних кусков записи."))
             pipeline.wait()
@@ -310,6 +313,15 @@ class LiveTranscriber(rumps.App):
 
             summary = self._make_summary(record, body)
             note = self._send_summary(summary) if summary else ""
+            # За минуту разговора обычно набирается несколько сотен символов.
+            # Если вышло заметно меньше, расшифровка неполная, и об этом лучше
+            # сказать сразу: звук записи сохранён, её можно переделать целиком.
+            per_minute = len(body) / max(1.0, duration / 60)
+            if per_minute < 200:
+                logging.warning("Расшифровка редкая: %.0f символов на минуту", per_minute)
+                note = (note + "\n" if note else "") + (
+                    "Расшифровка вышла неполной. Через «Историю» её можно "
+                    "переделать целиком из сохранённой записи.")
             record.write_meta({"status": "готово"})
             if summary:
                 self.ui(self._reset_menu)
@@ -362,6 +374,22 @@ class LiveTranscriber(rumps.App):
             on_send=send_again,
             on_copy=lambda: self.notify("Скопировано", "Итог в буфере обмена"))
 
+    def _keep_audio(self, record, channels: int) -> None:
+        """Сохраняем звук записи: по нему можно переделать расшифровку."""
+        raw = record.raw_audio_path
+        if not os.path.exists(raw):
+            return
+        try:
+            with open(raw, "rb") as f:
+                sample = f.read(audio.SAMPLE_RATE * audio.SAMPLE_WIDTH * channels * 600)
+            for index in range(channels):
+                who = "микрофон" if index == 0 else "собеседник"
+                logging.info("Звука на дорожке «%s»: %.0f%% времени",
+                             who, 100 * audio.speech_share(sample, channels, index))
+        except Exception:  # noqa: BLE001
+            logging.exception("не удалось померить звук записи")
+        audio.compress_raw(raw, record.audio_path, channels)
+
     def _restore_audio(self) -> None:
         if self.tap_id or self.tap_device_id:
             audio.destroy_system_tap(self.tap_id, self.tap_device_id)
@@ -381,7 +409,52 @@ class LiveTranscriber(rumps.App):
     # ── прочие пункты меню ──────────────────────────────
     def on_history(self, _sender) -> None:
         windows.history_window(storage.Record.list_all(),
-                               self.cfg.get("retention_days", config.RETENTION_DAYS))
+                               self.cfg.get("retention_days", config.RETENTION_DAYS),
+                               on_redo=self._redo_record)
+
+    def _redo_record(self, record) -> None:
+        """Расшифровать запись заново из сохранённого звука, целиком.
+
+        Разговор уходит одним куском, а не минутными отрезками, поэтому голоса
+        разбираются по всей записи сразу. Это спасает, когда расшифровка вышла
+        рваной, и позволяет переделать её, ничего не перезаписывая вслепую.
+        """
+        if self._busy:
+            windows.info("Идёт обработка", "Дождитесь конца текущей работы.")
+            return
+        self._busy = True
+        self.title = ICON_WORKING
+        threading.Thread(target=self._redo_worker, args=(record,), daemon=True).start()
+
+    def _redo_worker(self, record) -> None:
+        try:
+            self.ui(lambda: self.notify("Расшифровываю заново",
+                                        "Запись уходит целиком, это дольше обычного."))
+            channels = audio.audio_channels(record.audio_path)
+            pcm = audio.decode_audio(record.audio_path, channels)
+            if not pcm:
+                self.ui(lambda: windows.info("Звук не читается",
+                                             "Файл записи повреждён или удалён."))
+                return
+            text = transcribe.transcribe(pcm, self.cfg["assemblyai_key"],
+                                         self.cfg.get("language", "ru"), channels)
+            if not text.strip():
+                self.ui(lambda: windows.info("Речи не нашлось",
+                                             "Повторная расшифровка ничего не дала."))
+                return
+            record.replace_transcript(text)
+            summary = self._make_summary(record, text)
+            record.write_meta({"status": "готово"})
+            logging.info("Запись расшифрована заново: %d символов", len(text))
+            if summary:
+                self.ui(lambda: self._show_summary(
+                    record, summary, "Расшифровано заново, одним куском"))
+        except Exception as e:  # noqa: BLE001
+            logging.exception("переделать расшифровку не вышло")
+            self.ui(lambda: windows.info("Не получилось", str(e)[:200]))
+        finally:
+            self._busy = False
+            self.ui(self._reset_menu)
 
     def on_sound_check(self, _sender) -> None:
         self.notify("Проверяю звук", "Займёт несколько секунд")

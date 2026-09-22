@@ -103,6 +103,17 @@ class Record:
     def log_path(self) -> str:
         return os.path.join(self.path, "session.log")
 
+    @property
+    def raw_audio_path(self) -> str:
+        return os.path.join(self.path, "audio.raw")
+
+    @property
+    def audio_path(self) -> str:
+        return os.path.join(self.path, "audio.flac")
+
+    def has_audio(self) -> bool:
+        return os.path.exists(self.audio_path)
+
     def _read(self, path: str) -> str:
         try:
             with open(path, encoding="utf-8") as f:
@@ -115,6 +126,19 @@ class Record:
 
     def summary(self) -> str:
         return self._read(self.summary_path)
+
+    def replace_transcript(self, text: str) -> None:
+        """Переписывает расшифровку целиком, сохраняя прежнюю рядом."""
+        old = self.transcript()
+        if old:
+            with open(os.path.join(self.path, "transcript-прежний.md"),
+                      "w", encoding="utf-8") as f:
+                f.write(old)
+        title = self.meta().get("title", "Запись")
+        started = self.started_at() or now_msk()
+        with open(self.transcript_path, "w", encoding="utf-8") as f:
+            f.write(f"# Транскрипт — {started:%d.%m.%Y %H:%M} — {title}\n\n")
+            f.write(text.rstrip() + "\n")
 
     def append_transcript(self, text: str) -> None:
         with open(self.transcript_path, "a", encoding="utf-8") as f:
@@ -183,16 +207,28 @@ class Record:
             _session_handler = None
 
 
-def cleanup(retention_days: int = config.RETENTION_DAYS) -> int:
-    """Удаляет записи и старые логи за пределами срока хранения."""
+def cleanup(retention_days: int = config.RETENTION_DAYS,
+            audio_days: int = config.AUDIO_RETENTION_DAYS) -> int:
+    """Удаляет записи и старые логи за пределами срока хранения.
+
+    Звук занимает в сотни раз больше текста, поэтому живёт меньше:
+    его хватает, чтобы переделать расшифровку, пока созвон свежий.
+    """
     removed = 0
     cutoff = time.time() - retention_days * 86400
+    audio_cutoff = time.time() - audio_days * 86400
     for rec in Record.list_all():
         started = rec.started_at()
-        age_ok = (started.timestamp() if started else os.path.getmtime(rec.path)) < cutoff
-        if age_ok:
+        age = started.timestamp() if started else os.path.getmtime(rec.path)
+        if age < cutoff:
             shutil.rmtree(rec.path, ignore_errors=True)
             removed += 1
+            continue
+        if age < audio_cutoff:
+            for leftover in (rec.audio_path, rec.raw_audio_path):
+                if os.path.exists(leftover):
+                    os.remove(leftover)
+                    removed += 1
     if os.path.isdir(config.LOG_DIR):
         for name in os.listdir(config.LOG_DIR):
             path = os.path.join(config.LOG_DIR, name)

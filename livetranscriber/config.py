@@ -13,6 +13,7 @@ RECORDS_DIR = os.path.join(APP_SUPPORT, "records")
 LOG_DIR = os.path.join(APP_SUPPORT, "logs")
 
 RETENTION_DAYS = 30
+AUDIO_RETENTION_DAYS = 7
 
 DEFAULT_PROMPT = (
     "Итог созвона. Формат:\n"
@@ -31,6 +32,7 @@ DEFAULTS = {
     "language": "ru",
     "prompt": DEFAULT_PROMPT,
     "retention_days": RETENTION_DAYS,
+    "audio_retention_days": AUDIO_RETENTION_DAYS,
     "send_to_telegram": True,
     "show_start_window_on_launch": True,
 }

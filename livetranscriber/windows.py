@@ -159,6 +159,11 @@ class _PanelController(NSObject):
         if callback:
             callback()
 
+    def onThird_(self, sender):
+        callback = getattr(self, "third_callback", None)
+        if callback:
+            callback()
+
     def onClose_(self, sender):
         panel = getattr(self, "panel", None)
         if panel:
@@ -307,7 +312,7 @@ def summary_window(title: str, summary: str, record_path: str,
 
 
 # ── история ─────────────────────────────────────────────
-def history_window(records: list, retention_days: int) -> None:
+def history_window(records: list, retention_days: int, on_redo=None) -> None:
     """Список записей за срок хранения. Окно обычное, не блокирует приложение."""
     if not records:
         info("История пуста",
@@ -360,6 +365,19 @@ def history_window(records: list, retention_days: int) -> None:
     controller.first_callback = lambda: copy_to_clipboard(text_view.string())
     controller.second_callback = lambda: reveal_in_finder(current().path)
 
+    def redo() -> None:
+        record = current()
+        if not record.has_audio():
+            info("Звука нет",
+                 "Переделать расшифровку можно, пока сохранён звук записи.\n"
+                 "Он хранится меньше, чем текст.")
+            return
+        panel.close()
+        on_redo(record)
+
+    if on_redo:
+        controller.third_callback = redo
+
     popup.setTarget_(controller)
     popup.setAction_(NSSelectorFromString("onSelect:"))
 
@@ -374,6 +392,9 @@ def history_window(records: list, retention_days: int) -> None:
     content.addSubview_(toggle)
     content.addSubview_(_panel_button("Скопировать", 16, 150, controller, "onFirst:"))
     content.addSubview_(_panel_button("Показать файлы", 174, 170, controller, "onSecond:"))
+    if on_redo:
+        content.addSubview_(_panel_button("Расшифровать заново", 350, 210,
+                                          controller, "onThird:"))
     content.addSubview_(_panel_button("Закрыть", width - 116, 100, controller, "onClose:"))
     render()
 
