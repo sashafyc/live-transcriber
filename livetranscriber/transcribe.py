@@ -174,6 +174,35 @@ def transcribe(pcm: bytes, api_key: str, language: str = "ru",
     raise TranscribeError("истекло время ожидания результата")
 
 
+# Распознавание обучено в том числе на видео с субтитрами, и на тишине или
+# шуме оно достраивает концовку такого видео: титры переводчиков. Реального
+# отношения к разговору эти строки не имеют, фамилии каждый раз разные.
+# Титры переводчиков: «Редактор субтитров А.Семкин Корректор А.Егорова».
+# Узнаём их по связке «должность + инициал с точкой + фамилия», иначе
+# пострадает живая речь, где слово «корректор» стоит само по себе.
+_NAME = r"[А-ЯЁ]\.\s*[А-ЯЁ][а-яё]+"
+INVENTED_PHRASE = re.compile(
+    r"(?:[Рр]едактор\s+субтитров(?:\s+" + _NAME + r")?"
+    r"|[Кк]орректор\s+" + _NAME +
+    r"|[Сс]убтитр\w*\s+(?:сделал|создавал|подготовил|делал)[^.!?]*"
+    r"|[Пп]родолжение\s+следует\.{2,})")
+INVENTED_LIMIT = 12          # столько слов — потолок для такой вставки
+
+
+def _strip_invented(text: str) -> str:
+    """Вырезает титры, приклеившиеся к настоящей реплике."""
+    cleaned = INVENTED_PHRASE.sub(" ", text)
+    return re.sub(r"\s{2,}", " ", cleaned).strip(" .,")
+
+
+def _invented(text: str) -> bool:
+    """Реплика целиком состоит из выдуманных титров."""
+    words = text.split()
+    if not words or len(words) > INVENTED_LIMIT:
+        return False
+    return not _strip_invented(text)
+
+
 MIC_CHANNEL = "1"
 ME = "Я"
 OTHER = "Собеседник"
@@ -258,6 +287,9 @@ def _format(data: dict, only: str | None = None) -> str:
     items = data.get("utterances")
     if not items:
         return (data.get("text") or "").strip()
+    items = [u for u in items if not _invented((u.get("text") or "").strip())]
+    if not items:
+        return ""
     if only:
         # Дорожка одна и мы знаем, чья она: голоса различать не по чему
         text = " ".join((u.get("text") or "").strip() for u in items).strip()
@@ -295,7 +327,12 @@ def _format(data: dict, only: str | None = None) -> str:
         else:
             lines.append([name, text])
             last_name = name
-    return "\n".join(f"**{parts[0]}:** {' '.join(parts[1:])}" for parts in lines)
+    out = []
+    for parts in lines:
+        body = _strip_invented(" ".join(parts[1:]))
+        if body:
+            out.append(f"**{parts[0]}:** {body}")
+    return "\n".join(out)
 
 
 class ChunkPipeline:
