@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array
 import io
 import logging
 import os
@@ -13,7 +14,8 @@ import wave
 
 import requests
 
-from .audio import CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH, which
+from .audio import (CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH, SILENCE_RMS,
+                    levels, which)
 
 API_BASE = "https://api.assemblyai.com/v2"
 POLL_INTERVAL = 3
@@ -95,12 +97,36 @@ def check_key(api_key: str) -> tuple[bool, str]:
     return True, "ключ рабочий"
 
 
+def _single_track(pcm: bytes, channels: int) -> tuple[bytes, int, str | None]:
+    """Если одна дорожка пустая, оставляем только вторую.
+
+    На пустой дорожке распознавание выдумывает текст: в расшифровке
+    появлялись титры вроде «Редактор субтитров». Молчащую дорожку лучше
+    не отправлять вовсе, а имя говорящего мы и так знаем по номеру дорожки.
+    """
+    if channels != 2 or not pcm:
+        return pcm, channels, None
+    mic, other = levels(pcm, 2)[:2]
+    keep = None
+    if other < SILENCE_RMS <= mic:
+        keep, name = 0, ME
+    elif mic < SILENCE_RMS <= other:
+        keep, name = 1, OTHER
+    if keep is None:
+        return pcm, channels, None
+    samples = array.array("h")
+    samples.frombytes(pcm[:len(pcm) // 4 * 4])
+    logging.info("Вторая дорожка пустая, отправляю только «%s»", name)
+    return samples[keep::2].tobytes(), 1, name
+
+
 def transcribe(pcm: bytes, api_key: str, language: str = "ru",
                channels: int = 1, diarize: bool = True) -> str:
     """Один чанк PCM → текст с метками спикеров."""
     if not api_key:
         raise TranscribeError("не задан ключ AssemblyAI")
 
+    pcm, channels, only = _single_track(pcm, channels)
     payload_bytes, fmt = encode(pcm, channels)
     headers = {"Authorization": api_key}
     logging.info("Отправляю %s, %.1f МБ", fmt, len(payload_bytes) / 1e6)
@@ -142,7 +168,7 @@ def transcribe(pcm: bytes, api_key: str, language: str = "ru",
         status = data.get("status")
         if status == "completed":
             logging.info("Модель: %s", data.get("speech_model_used") or "не указана")
-            return _format(data)
+            return _format(data, only)
         if status == "error":
             raise TranscribeError(data.get("error", "неизвестная ошибка"))
     raise TranscribeError("истекло время ожидания результата")
@@ -228,10 +254,14 @@ def _drop_echo(items: list[dict]) -> list[dict]:
     return kept
 
 
-def _format(data: dict) -> str:
+def _format(data: dict, only: str | None = None) -> str:
     items = data.get("utterances")
     if not items:
         return (data.get("text") or "").strip()
+    if only:
+        # Дорожка одна и мы знаем, чья она: голоса различать не по чему
+        text = " ".join((u.get("text") or "").strip() for u in items).strip()
+        return f"**{only}:** {text}" if text else ""
 
     multi = bool(data.get("audio_channels", 1) and int(data.get("audio_channels", 1)) > 1)
     if multi:
