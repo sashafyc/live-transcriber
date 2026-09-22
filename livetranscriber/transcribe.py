@@ -97,6 +97,58 @@ def check_key(api_key: str) -> tuple[bool, str]:
     return True, "ключ рабочий"
 
 
+SILENCE_GAP_SEC = 3.0        # пауза длиннее этой вырезается
+KEEP_EDGE_SEC = 0.4          # сколько тишины оставить по краям речи
+WINDOW_MS = 100
+
+
+def _trim_silence(pcm: bytes, channels: int) -> bytes:
+    """Вырезает длинные паузы перед отправкой.
+
+    Распознавание не умеет молчать: на участке без речи оно достраивает то,
+    что чаще всего стояло рядом с тишиной в обучающих данных — титры
+    переводчиков. Чем меньше тишины уходит, тем меньше выдумок. Заодно
+    расшифровка считается по длительности, так что пауза стоит денег.
+
+    Дорожки режутся одновременно, иначе речь на них разъедется во времени.
+    """
+    frame = SAMPLE_WIDTH * channels
+    step = int(SAMPLE_RATE * frame * WINDOW_MS / 1000)
+    if not pcm or len(pcm) < step * 2:
+        return pcm
+    windows = [pcm[i:i + step] for i in range(0, len(pcm) - step + 1, step)]
+    loud = [max(levels(w, channels)) >= SILENCE_RMS for w in windows]
+    edge = int(KEEP_EDGE_SEC * 1000 / WINDOW_MS)
+    gap = int(SILENCE_GAP_SEC * 1000 / WINDOW_MS)
+
+    keep = [False] * len(windows)
+    for index, is_loud in enumerate(loud):
+        if is_loud:
+            for near in range(max(0, index - edge), min(len(windows), index + edge + 1)):
+                keep[near] = True
+    # Короткие паузы внутри речи оставляем: без них слова слипаются
+    start = None
+    for index in range(len(windows) + 1):
+        quiet = index < len(windows) and not keep[index]
+        if quiet and start is None:
+            start = index
+        elif not quiet and start is not None:
+            if index - start <= gap:
+                for near in range(start, index):
+                    keep[near] = True
+            start = None
+
+    if all(keep):
+        return pcm
+    trimmed = b"".join(w for w, ok in zip(windows, keep) if ok)
+    if len(trimmed) < SAMPLE_RATE * frame:      # меньше секунды речи
+        return trimmed
+    logging.info("Вырезал пауз: %.0f из %.0f секунд",
+                 (len(pcm) - len(trimmed)) / (SAMPLE_RATE * frame),
+                 len(pcm) / (SAMPLE_RATE * frame))
+    return trimmed
+
+
 def _single_track(pcm: bytes, channels: int) -> tuple[bytes, int, str | None]:
     """Если одна дорожка пустая, оставляем только вторую.
 
@@ -127,6 +179,10 @@ def transcribe(pcm: bytes, api_key: str, language: str = "ru",
         raise TranscribeError("не задан ключ AssemblyAI")
 
     pcm, channels, only = _single_track(pcm, channels)
+    pcm = _trim_silence(pcm, channels)
+    if not pcm:
+        logging.info("В куске записи нет речи, распознавать нечего")
+        return ""
     payload_bytes, fmt = encode(pcm, channels)
     headers = {"Authorization": api_key}
     logging.info("Отправляю %s, %.1f МБ", fmt, len(payload_bytes) / 1e6)
