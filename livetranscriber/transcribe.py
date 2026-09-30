@@ -245,13 +245,20 @@ def _single_track(pcm: bytes, channels: int) -> tuple[bytes, int, str | None]:
 
 
 def transcribe(pcm: bytes, api_key: str, language: str = "ru",
-               channels: int = 1, diarize: bool = True) -> str:
-    """Один чанк PCM → текст с метками спикеров."""
+               channels: int = 1, diarize: bool = True,
+               solo: str | None = None) -> str:
+    """Один чанк PCM → текст с метками спикеров.
+
+    `solo` — чья это дорожка, когда пишется одна: на внешнем созвоне обоих
+    слышно через микрофон, и хозяин микрофона известен заранее.
+    """
     if not api_key:
         raise TranscribeError("не задан ключ AssemblyAI")
 
     pcm = _duck_bleed(pcm, channels)
     pcm, channels, only = _single_track(pcm, channels)
+    if only is None and channels == 1:
+        only = solo
     pcm = _trim_silence(pcm, channels)
     if not pcm:
         logging.info("В куске записи нет речи, распознавать нечего")
@@ -573,9 +580,11 @@ class ChunkPipeline:
     """Очередь чанков: транскрибируем параллельно, пишем строго по порядку."""
 
     def __init__(self, api_key: str, language: str, on_text, on_error=None,
-                 workers: int = 2, rescue_dir: str | None = None):
+                 solo: str | None = None, workers: int = 2,
+                 rescue_dir: str | None = None):
         self.api_key = api_key
         self.language = language
+        self.solo = solo
         # Куда сложить аудио, которое не удалось расшифровать: лучше кусок
         # файла на диске, чем молча потерянный разговор
         self.rescue_dir = rescue_dir
@@ -599,7 +608,8 @@ class ChunkPipeline:
     def _work(self, pcm: bytes, index: int, channels: int = 1) -> None:
         text = ""
         try:
-            text = transcribe(pcm, self.api_key, self.language, channels)
+            text = transcribe(pcm, self.api_key, self.language, channels,
+                              solo=self.solo)
             if not text:
                 self.empty += 1
                 logging.warning("Чанк %d: речь не распознана", index)

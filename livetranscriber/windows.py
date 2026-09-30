@@ -234,7 +234,7 @@ def start_dialog(mic_name: str, output_name: str, system_note: str,
     Окно обычное: при запуске приложения оно открывается само, и модальное
     остановило бы всё приложение, если бы его вовремя не закрыли.
     """
-    width, height = 520, 360
+    width, height = 520, 392
     panel = _make_panel("Новая запись", width, height)
     controller = _PanelController.alloc().init()
     content = panel.contentView()
@@ -250,21 +250,36 @@ def start_dialog(mic_name: str, output_name: str, system_note: str,
     prompt_view.setFont_(NSFont.systemFontOfSize_(11))
     prompt_view.setString_(default_prompt)
     prompt_scroll = NSScrollView.alloc().initWithFrame_(
-        NSMakeRect(16, 96, width - 32, 150))
+        NSMakeRect(16, 128, width - 32, 150))
     prompt_scroll.setHasVerticalScroller_(True)
     prompt_scroll.setBorderType_(NSBezelBorder)
     prompt_scroll.setDocumentView_(prompt_view)
     content.addSubview_(prompt_scroll)
 
+    external = NSButton.alloc().initWithFrame_(NSMakeRect(16, 98, width - 32, 20))
+    external.setButtonType_(NSSwitchButton)
+    external.setTitle_("Внешний созвон — писать только микрофон")
+    external.setTarget_(controller)
+    external.setAction_(NSSelectorFromString("onToggle:"))
+    content.addSubview_(external)
+
     content.addSubview_(label(f"Микрофон: {mic_name}", 16, 72, width - 32, size=11))
-    content.addSubview_(label(f"Выход: {output_name} · {system_note}", 16, 56,
-                              width - 32, size=11))
+    system_label = label(f"Выход: {output_name} · {system_note}", 16, 56,
+                         width - 32, size=11)
+    content.addSubview_(system_label)
+
+    def switched(on: bool) -> None:
+        # Разговор идёт мимо компьютера, и дорожка собеседника только мешает:
+        # микрофон слышит обоих, а пустая вторая дорожка родит выдуманные титры
+        system_label.setStringValue_(
+            "Собеседник слышен через микрофон, системный звук не пишется" if on
+            else f"Выход: {output_name} · {system_note}")
 
     def begin() -> None:
         title = name_field.stringValue().strip() or "Созвон"
         prompt = prompt_view.string().strip() or default_prompt
         panel.close()
-        on_start(title, prompt)
+        on_start(title, prompt, bool(external.state()))
 
     def check() -> None:
         panel.close()
@@ -272,6 +287,7 @@ def start_dialog(mic_name: str, output_name: str, system_note: str,
 
     controller.first_callback = begin
     controller.second_callback = check
+    controller.toggle_callback = switched
     content.addSubview_(_panel_button("Начать запись", 16, 150, controller, "onFirst:"))
     content.addSubview_(_panel_button("Проверить звук", 174, 150, controller, "onSecond:"))
     content.addSubview_(_panel_button("Отмена", width - 116, 100, controller, "onClose:"))

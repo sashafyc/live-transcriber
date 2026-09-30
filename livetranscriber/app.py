@@ -134,23 +134,25 @@ class LiveTranscriber(rumps.App):
         else:
             system_note = "⚠️ собеседник НЕ пишется"
 
-        def begin(title: str, prompt: str) -> None:
+        def begin(title: str, prompt: str, external: bool = False) -> None:
             if not mic:
                 windows.info("Микрофон не найден",
                              "Подключите микрофон и проверьте разрешение "
                              "в настройках системы.")
                 return
-            self._begin_recording(title, prompt, mic[1])
+            self._begin_recording(title, prompt, mic[1], external)
 
         windows.start_dialog(mic_name, output_name, system_note,
                              self.cfg.get("prompt", config.DEFAULT_PROMPT),
                              on_start=begin,
                              on_check=lambda: self.on_sound_check(None))
 
-    def _begin_recording(self, title: str, prompt: str, mic_name: str) -> None:
+    def _begin_recording(self, title: str, prompt: str, mic_name: str,
+                         external: bool = False) -> None:
         self.record = storage.Record.create(title, prompt)
         self.record.attach_log()
-        logging.info("Начинаю запись «%s» → %s", title, self.record.path)
+        logging.info("Начинаю запись «%s» → %s%s", title, self.record.path,
+                     " (внешний созвон, только микрофон)" if external else "")
 
         # Звук собеседника берём ответвлением от системного звука: выход
         # пользователя при этом не трогаем — на созвоне ничего не пропадает
@@ -160,7 +162,10 @@ class LiveTranscriber(rumps.App):
         self.tap_device_id = None
         system_index = None
 
-        tap = audio.create_system_tap()
+        # Внешний созвон: разговор идёт мимо компьютера, собеседник слышен
+        # только через микрофон. Вторая дорожка была бы пустой, а на пустой
+        # дорожке распознавание сочиняет титры переводчиков
+        tap = None if external else audio.create_system_tap()
         if tap:
             self.tap_id, self.tap_device_id = tap
             time.sleep(0.4)
@@ -172,7 +177,8 @@ class LiveTranscriber(rumps.App):
 
         # Запасной путь для macOS старее 14.4: составное устройство и
         # переключение выхода. Здесь звук у пользователя меняет устройство.
-        if system_index is None and audio.find_device(audio.BLACKHOLE_NAME):
+        if (system_index is None and not external
+                and audio.find_device(audio.BLACKHOLE_NAME)):
             self.previous_output = audio.current_output()
             output_device = next((d for d in audio.devices()
                                   if d["name"] == self.previous_output and d["output"]), None)
@@ -187,13 +193,14 @@ class LiveTranscriber(rumps.App):
             else:
                 logging.error("Составное устройство не включилось")
 
-        if system_index is None:
+        if system_index is None and not external:
             self.notify("Пишу только микрофон",
                         "Звук собеседника в запись не попадёт. Проверьте звук в меню.")
 
         self.pipeline = transcribe.ChunkPipeline(
             self.cfg["assemblyai_key"], self.cfg.get("language", "ru"),
             on_text=self._on_text, on_error=self._on_chunk_error,
+            solo=transcribe.ME if external else None,
             rescue_dir=self.record.path)
         self.recorder = audio.Recorder(on_chunk=self._on_chunk,
                                        on_level=self._on_level,
@@ -437,7 +444,8 @@ class LiveTranscriber(rumps.App):
                                              "Файл записи повреждён или удалён."))
                 return
             text = transcribe.transcribe(pcm, self.cfg["assemblyai_key"],
-                                         self.cfg.get("language", "ru"), channels)
+                                         self.cfg.get("language", "ru"), channels,
+                                         solo=transcribe.ME if channels == 1 else None)
             if not text.strip():
                 self.ui(lambda: windows.info("Речи не нашлось",
                                              "Повторная расшифровка ничего не дала."))
