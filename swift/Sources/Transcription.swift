@@ -1,0 +1,162 @@
+import Foundation
+
+enum Provider: String, Codable, CaseIterable, Identifiable {
+    case openai, assemblyai, custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .openai: "OpenAI"
+        case .assemblyai: "AssemblyAI"
+        case .custom: "Свой адрес (OpenAI-совместимый)"
+        }
+    }
+
+    /// Подсказки в выпадающем списке; вписать можно любую модель.
+    var suggestedModels: [String] {
+        switch self {
+        case .openai: ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"]
+        case .assemblyai: ["universal-2", "universal-3-5-pro"]
+        case .custom: []
+        }
+    }
+}
+
+/// Что и чем распознавать: своё для диктовки и для созвонов.
+struct Recognition: Codable, Equatable {
+    var provider: Provider
+    var model: String
+    var language: String  // "auto" — определять сам
+}
+
+struct TranscriptionError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
+
+enum Transcriber {
+    static let customEndpointKey = "customEndpoint"
+
+    static func transcribe(_ audio: URL, _ setup: Recognition) async throws -> String {
+        let file = try Data(contentsOf: audio)
+        let text: String
+        switch setup.provider {
+        case .openai:
+            text = try await openAICompatible(file, setup, endpoint: "https://api.openai.com/v1/audio/transcriptions", key: Keychain.get("openai"), keyRequired: true)
+        case .custom:
+            let endpoint = UserDefaults.standard.string(forKey: customEndpointKey) ?? ""
+            guard !endpoint.isEmpty else { throw TranscriptionError("Не задан адрес — открой настройки") }
+            text = try await openAICompatible(file, setup, endpoint: endpoint, key: Keychain.get("custom"), keyRequired: false)
+        case .assemblyai:
+            text = try await assemblyAI(file, setup)
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: OpenAI и всё, что говорит на его языке
+
+    static func openAICompatible(_ file: Data, _ setup: Recognition, endpoint: String, key: String, keyRequired: Bool) async throws -> String {
+        guard !keyRequired || !key.isEmpty else { throw TranscriptionError("Нет ключа \(setup.provider.title) — открой настройки") }
+        guard let url = URL(string: endpoint) else { throw TranscriptionError("Неверный адрес: \(endpoint)") }
+        var fields = [("response_format", "json")]
+        if !setup.model.isEmpty { fields.append(("model", setup.model)) }
+        if setup.language != "auto" { fields.append(("language", setup.language)) }
+        let form = multipart(fields, file: file)
+        var request = URLRequest(url: url, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.setValue(form.type, forHTTPHeaderField: "Content-Type")
+        if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        let (status, json) = try await call(request, form.body)
+        guard status == 200, let text = json["text"] as? String else {
+            throw TranscriptionError("\(setup.provider.title): \(errorText(status, json))")
+        }
+        return text
+    }
+
+    // MARK: AssemblyAI: загрузка → задание → опрос
+
+    static func assemblyAI(_ file: Data, _ setup: Recognition) async throws -> String {
+        let key = Keychain.get("assemblyai")
+        guard !key.isEmpty else { throw TranscriptionError("Нет ключа AssemblyAI — открой настройки") }
+        let base = "https://api.assemblyai.com/v2"
+
+        var upload = URLRequest(url: URL(string: base + "/upload")!, timeoutInterval: 120)
+        upload.httpMethod = "POST"
+        upload.setValue(key, forHTTPHeaderField: "Authorization")
+        var (status, json) = try await call(upload, file)
+        guard status == 200, let audioURL = json["upload_url"] as? String else {
+            throw TranscriptionError("AssemblyAI: \(errorText(status, json))")
+        }
+
+        var job: [String: Any] = ["audio_url": audioURL, "speech_models": [setup.model]]
+        if setup.language == "auto" { job["language_detection"] = true } else { job["language_code"] = setup.language }
+        var create = URLRequest(url: URL(string: base + "/transcript")!, timeoutInterval: 60)
+        create.httpMethod = "POST"
+        create.setValue(key, forHTTPHeaderField: "Authorization")
+        create.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        (status, json) = try await call(create, try JSONSerialization.data(withJSONObject: job))
+        guard status == 200, let id = json["id"] as? String else {
+            throw TranscriptionError("AssemblyAI: \(errorText(status, json))")
+        }
+
+        var poll = URLRequest(url: URL(string: base + "/transcript/\(id)")!, timeoutInterval: 60)
+        poll.setValue(key, forHTTPHeaderField: "Authorization")
+        for _ in 0..<180 {
+            try await Task.sleep(for: .seconds(1))
+            (status, json) = try await call(poll)
+            switch json["status"] as? String {
+            case "completed": return json["text"] as? String ?? ""
+            case "error": throw TranscriptionError("AssemblyAI: \(json["error"] as? String ?? "ошибка распознавания")")
+            default: continue
+            }
+        }
+        throw TranscriptionError("AssemblyAI не ответил за 3 минуты")
+    }
+
+    // MARK: Общее
+
+    static func call(_ request: URLRequest, _ body: Data? = nil) async throws -> (Int, [String: Any]) {
+        let (data, response) = if let body {
+            try await URLSession.shared.upload(for: request, from: body)
+        } else {
+            try await URLSession.shared.data(for: request)
+        }
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        return ((response as? HTTPURLResponse)?.statusCode ?? 0, json)
+    }
+
+    static func errorText(_ status: Int, _ json: [String: Any]) -> String {
+        let detail = (json["error"] as? [String: Any])?["message"] as? String ?? json["error"] as? String ?? ""
+        return "HTTP \(status) \(detail)".trimmingCharacters(in: .whitespaces)
+    }
+
+    static func multipart(_ fields: [(String, String)], file: Data) -> (body: Data, type: String) {
+        let boundary = "LiveTranscriber-" + UUID().uuidString
+        var body = Data()
+        for (name, value) in fields {
+            body += Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8)
+        }
+        body += Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\nContent-Type: audio/mp4\r\n\r\n".utf8)
+        body += file
+        body += Data("\r\n--\(boundary)--\r\n".utf8)
+        return (body, "multipart/form-data; boundary=\(boundary)")
+    }
+
+    /// Фраза для кнопки «Проверить»: синтез речи macOS → m4a, без микрофона.
+    static func testRecording() throws -> URL {
+        let temp = FileManager.default.temporaryDirectory
+        let aiff = temp.appendingPathComponent("lt-check.aiff"), m4a = temp.appendingPathComponent("lt-check.m4a")
+        try? FileManager.default.removeItem(at: m4a)
+        for (tool, arguments) in [
+            ("/usr/bin/say", ["-v", "Milena", "-o", aiff.path, "Проверка связи"]),
+            ("/usr/bin/afconvert", ["-f", "m4af", "-d", "aac", "-r", "16000", "-c", "1", aiff.path, m4a.path]),
+        ] {
+            let process = try Process.run(URL(fileURLWithPath: tool), arguments: arguments)
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { throw TranscriptionError("Не получилось сделать тестовую запись") }
+        }
+        return m4a
+    }
+}
