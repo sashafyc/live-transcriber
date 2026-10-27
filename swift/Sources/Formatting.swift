@@ -17,7 +17,8 @@ enum Formatter: String, Codable, CaseIterable, Identifiable {
     var suggestedModels: [String] {
         switch self {
         case .off: []
-        case .openai: ["gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o-mini"]
+        // gpt-4.1 и gpt-4o OpenAI убирает из API 14.01.2027, gpt-4.1-nano уже отключён
+        case .openai: ["gpt-6-luna", "gpt-5-mini", "gpt-5-nano"]
         case .deepseek: ["deepseek-chat"]
         }
     }
@@ -48,17 +49,32 @@ enum TextFormatter {
     """
 
     static func format(_ text: String, _ setup: Formatting) async throws -> String {
+        try await complete(text, setup).text
+    }
+
+    /// Рассуждающие модели (gpt-5…, o…) не принимают temperature; рассуждать тут не о чем — минимум усилий.
+    private static func isReasoning(_ model: String) -> Bool {
+        ["gpt-5", "gpt-6", "o1", "o3", "o4"].contains { model.hasPrefix($0) }
+    }
+
+    private static func complete(_ text: String, _ setup: Formatting) async throws -> (text: String, usage: [String: Any]) {
         let key = Keychain.get(setup.formatter.rawValue)
         guard !key.isEmpty else { throw TranscriptionError("Нет ключа \(setup.formatter.title) для оформления") }
         var request = URLRequest(url: URL(string: setup.formatter.endpoint)!, timeoutInterval: 30)
         request.httpMethod = "POST"
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": setup.model,
-            "temperature": 0.2,
             "messages": [["role": "system", "content": instructions], ["role": "user", "content": text]],
         ]
+        if isReasoning(setup.model) {
+            // Первые gpt-5 знают только «minimal», более новые — «none»
+            let original = setup.model.hasPrefix("gpt-5") && !setup.model.hasPrefix("gpt-5.")
+            body["reasoning_effort"] = original ? "minimal" : "none"
+        } else {
+            body["temperature"] = 0.2
+        }
         let (status, json) = try await Transcriber.call(request, try JSONSerialization.data(withJSONObject: body))
         let message = ((json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String
         guard status == 200, let result = message?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty else {
@@ -66,18 +82,23 @@ enum TextFormatter {
         }
         // Заметно короче исходника — значит, модель что-то выкинула или пересказала: такое не берём.
         guard result.count >= text.count * 7 / 10 else { throw TranscriptionError("Оформление сократило текст, оставлен исходный") }
-        return result
+        return (result, json["usage"] as? [String: Any] ?? [:])
     }
 
-    /// Проверка из терминала: LiveTranscriber --format deepseek "текст"
+    /// Проверка из терминала: LiveTranscriber --format deepseek "текст" [модель] — печатает время и токены.
     static func checkFromCommandLine() {
         let arguments = CommandLine.arguments
-        guard arguments.count == 4, arguments[1] == "--format", let formatter = Formatter(rawValue: arguments[2]) else { return }
-        let setup = Formatting(formatter: formatter, model: formatter.suggestedModels.first ?? "")
+        guard arguments.count >= 4, arguments[1] == "--format", let formatter = Formatter(rawValue: arguments[2]) else { return }
+        let model = arguments.count > 4 ? arguments[4] : formatter.suggestedModels.first ?? ""
+        let setup = Formatting(formatter: formatter, model: model)
         let done = DispatchSemaphore(value: 0)
         Task.detached {
             do {
-                print(try await format(arguments[3], setup))
+                let started = Date()
+                let (text, usage) = try await complete(arguments[3], setup)
+                print(String(format: "[%.1f с, вход %@, выход %@ токенов]", Date().timeIntervalSince(started),
+                             "\(usage["prompt_tokens"] ?? "?")", "\(usage["completion_tokens"] ?? "?")"))
+                print(text)
             } catch {
                 print("ОШИБКА: \(error.localizedDescription)")
             }
