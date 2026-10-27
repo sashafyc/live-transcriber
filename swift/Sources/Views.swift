@@ -150,6 +150,7 @@ struct ModelField: View {
                         Image(systemName: "chevron.down")
                     }
                     .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)  // иначе рядом со своей стрелкой рисуется вторая
                     .fixedSize()
                 }
             }
