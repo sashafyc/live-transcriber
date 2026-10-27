@@ -103,10 +103,12 @@ struct SettingsView: View {
                     if dictation.accessibilityGranted {
                         Text("есть")
                     } else {
-                        Button("Выдать") {
-                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                        }
+                        Button("Выдать") { openAccessibilitySettings() }
                     }
+                }
+                if !dictation.accessibilityGranted {
+                    Text("Если Live Transcriber 2 в списке уже включён — это запись от прошлой сборки. Удали её кнопкой «−» и добавь приложение заново.")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
             }
         }

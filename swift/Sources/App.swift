@@ -24,7 +24,7 @@ struct LiveTranscriberApp: App {
         MenuBarExtra {
             MenuContent(settings: settings, history: history, dictation: dictation)
         } label: {
-            Image(systemName: dictation.state.symbol)
+            Image(systemName: dictation.accessibilityGranted ? dictation.state.symbol : "exclamationmark.triangle")
         }
         Window("История диктовок", id: "history") {
             HistoryView(history: history, dictation: dictation)
@@ -45,7 +45,12 @@ struct MenuContent: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        Text(status)
+        if dictation.accessibilityGranted {
+            Text(status)
+        } else {
+            Text("Fn не работает: нет Универсального доступа")
+            Button("Выдать Универсальный доступ…") { openAccessibilitySettings() }
+        }
         if let last = history.entries.first(where: { $0.text?.isEmpty == false })?.text {
             Button("Скопировать последнюю диктовку") { copyToClipboard(last) }
         }
@@ -66,7 +71,7 @@ struct MenuContent: View {
 
     private var status: String {
         switch dictation.state {
-        case .idle: dictation.accessibilityGranted ? "Держи \(settings.hotkey.name) и говори" : "Нужен Универсальный доступ — открой настройки"
+        case .idle: "Держи \(settings.hotkey.name) и говори"
         case .recording: "Запись…"
         case .sending: "Распознаю…"
         case .failed(let message): message

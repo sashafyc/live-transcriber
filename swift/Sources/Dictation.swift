@@ -178,6 +178,10 @@ func paste(_ text: String) {
     }
 }
 
+func openAccessibilitySettings() {
+    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+}
+
 func copyToClipboard(_ text: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
