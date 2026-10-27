@@ -17,7 +17,8 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
     var suggestedModels: [String] {
         switch self {
         case .openai: ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"]
-        case .assemblyai: ["universal-2", "universal-3-5-pro"]
+        // 28.10.2026 пакетный API принимает только эти; universal-3-6-pro пока только в потоковом
+        case .assemblyai: ["universal-2", "universal-3-5-pro", "universal-3-pro"]
         case .custom: []
         }
     }
@@ -142,6 +143,25 @@ enum Transcriber {
         body += file
         body += Data("\r\n--\(boundary)--\r\n".utf8)
         return (body, "multipart/form-data; boundary=\(boundary)")
+    }
+
+    /// Проверка провайдера из терминала, ключи берутся из связки: LiveTranscriber --check assemblyai [модель]
+    static func checkFromCommandLine() {
+        let arguments = CommandLine.arguments
+        guard arguments.count >= 3, arguments[1] == "--check", let provider = Provider(rawValue: arguments[2]) else { return }
+        let model = arguments.count > 3 ? arguments[3] : provider.suggestedModels.first ?? ""
+        let setup = Recognition(provider: provider, model: model, language: "ru")
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            do {
+                print(try await transcribe(try testRecording(), setup))
+            } catch {
+                print("ОШИБКА: \(error.localizedDescription)")
+            }
+            done.signal()
+        }
+        done.wait()
+        exit(0)
     }
 
     /// Фраза для кнопки «Проверить»: синтез речи macOS → m4a, без микрофона.

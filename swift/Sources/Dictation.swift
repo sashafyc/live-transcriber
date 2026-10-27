@@ -18,17 +18,24 @@ import Observation
         }
     }
 
-    private(set) var state = State.idle
+    private(set) var state = State.idle {
+        didSet { hud.update(for: state) }
+    }
+    /// Громкость последних мгновений записи, 0…1 — для волны на плашке.
+    private(set) var levels = [Float](repeating: 0, count: 20)
     private(set) var accessibilityGranted = AXIsProcessTrusted()
     private let settings: AppSettings
     private let history: History
     private var recorder: AVAudioRecorder?
+    private var meterTimer: Timer?
     private var recordingID = UUID()
     private var recordStarted = Date()
+    @ObservationIgnored private var hud: RecordingHUD!
 
     init(settings: AppSettings, history: History) {
         self.settings = settings
         self.history = history
+        hud = RecordingHUD(dictation: self)
         _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
         waitForAccessibility()
     }
@@ -70,16 +77,33 @@ import Observation
         ]
         do {
             let recorder = try AVAudioRecorder(url: audioURL(recordingID), settings: format)
+            recorder.isMeteringEnabled = true
             guard recorder.record() else { throw TranscriptionError("Микрофон не отдаёт звук") }
             self.recorder = recorder
             recordStarted = Date()
+            levels = levels.map { _ in 0 }
+            meterTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.sampleLevel() }
             state = .recording
         } catch {
             fail(error.localizedDescription)
         }
     }
 
+    private func sampleLevel() {
+        guard let recorder else { return }
+        recorder.updateMeters()
+        let decibels = recorder.averagePower(forChannel: 0)  // −160…0, речь обычно −45…−10
+        levels.removeFirst()
+        levels.append(max(0, min(1, (decibels + 50) / 40)))
+    }
+
+    private func stopMeter() {
+        meterTimer?.invalidate()
+        meterTimer = nil
+    }
+
     private func cancel() {
+        stopMeter()
         recorder?.stop()
         recorder = nil
         try? FileManager.default.removeItem(at: audioURL(recordingID))
@@ -89,6 +113,7 @@ import Observation
     private func stop() {
         guard let recorder else { return }
         let seconds = recorder.currentTime
+        stopMeter()
         recorder.stop()
         self.recorder = nil
         guard seconds >= 0.4 else { return cancel() }  // случайное нажатие

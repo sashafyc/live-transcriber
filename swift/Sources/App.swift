@@ -8,6 +8,7 @@ struct LiveTranscriberApp: App {
     @State private var dictation: Dictation
 
     init() {
+        Transcriber.checkFromCommandLine()
         let settings = AppSettings(), history = History()
         _settings = State(initialValue: settings)
         _history = State(initialValue: history)
