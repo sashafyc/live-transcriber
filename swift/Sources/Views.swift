@@ -19,6 +19,10 @@ struct HistoryView: View {
                             Text("\(Int(entry.seconds.rounded())) с")
                             Text(entry.recognition.model.isEmpty ? entry.recognition.provider.title : entry.recognition.model)
                             Spacer()
+                            if let raw = entry.raw {
+                                Button("Исходный") { copyToClipboard(raw) }
+                                    .help("Скопировать текст до оформления")
+                            }
                             if let text = entry.text {
                                 Button("Скопировать") { copyToClipboard(text) }
                             } else if entry.audioName != nil, entry.error != nil {
@@ -49,6 +53,7 @@ struct SettingsView: View {
     @State private var openaiKey = Keychain.get("openai")
     @State private var assemblyaiKey = Keychain.get("assemblyai")
     @State private var customKey = Keychain.get("custom")
+    @State private var deepseekKey = Keychain.get("deepseek")
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var check = ""
     @State private var checking = false
@@ -81,11 +86,29 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Оформление текста") {
+                Picker("Оформлять через", selection: $settings.formatting.formatter) {
+                    ForEach(Formatter.allCases) { Text($0.title).tag($0) }
+                }
+                .onChange(of: settings.formatting.formatter) { _, formatter in
+                    settings.formatting.model = formatter.suggestedModels.first ?? ""
+                }
+                if settings.formatting.formatter != .off {
+                    ModelField(model: $settings.formatting.model, suggestions: settings.formatting.formatter.suggestedModels)
+                }
+                Text("Абзацы, пунктуация, без паразитов и оговорок, смысл не меняется. Фразы короче \(TextFormatter.minWords) слов вставляются сразу. Если оформление не ответило или выкинуло часть текста — вставится распознанный как есть, исходник всегда есть в истории.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+
+            CallSettingsSection(settings: settings)
+
             Section("Ключи") {
                 SecureField("OpenAI", text: $openaiKey)
                     .onChange(of: openaiKey) { _, key in Keychain.set("openai", key) }
                 SecureField("AssemblyAI", text: $assemblyaiKey)
                     .onChange(of: assemblyaiKey) { _, key in Keychain.set("assemblyai", key) }
+                SecureField("DeepSeek", text: $deepseekKey)
+                    .onChange(of: deepseekKey) { _, key in Keychain.set("deepseek", key) }
                 TextField("Свой адрес", text: $settings.customEndpoint, prompt: Text("http://127.0.0.1:8767/v1/audio/transcriptions"))
                 SecureField("Ключ своего адреса", text: $customKey, prompt: Text("если нужен"))
                     .onChange(of: customKey) { _, key in Keychain.set("custom", key) }
@@ -113,8 +136,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: 540, height: 720)  // секций стало много: форма прокручивается, а не вылезает за экран
     }
 
     private func runCheck() {

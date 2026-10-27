@@ -6,13 +6,15 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
 swift build -c release --arch arm64
 BIN="$(swift build -c release --arch arm64 --show-bin-path)/LiveTranscriber"
-APP="build/Live Transcriber 2.app"
+# Бандл собираем вне Документов: их синкает iCloud, и File Provider навешивает на .app
+# атрибуты сразу после xattr -cr — codesign падает с «detritus not allowed»
+APP="${TMPDIR:-/tmp}/lt-build/Live Transcriber 2.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/"
 cp "$BIN" "$APP/Contents/MacOS/"
 cp ../assets/icon.icns "$APP/Contents/Resources/"
-xattr -cr "$APP"  # иначе codesign ругается на «detritus» от Finder
+xattr -cr "$APP"
 
 # Подпись Apple Development (бесплатный Apple ID в Xcode) не меняется между сборками,
 # и разрешения macOS не слетают. Без неё — ad-hoc, и разрешения придётся выдавать заново.

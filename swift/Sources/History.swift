@@ -10,6 +10,8 @@ struct DictationEntry: Codable, Identifiable {
     var seconds: Double
     var recognition: Recognition
     var text: String?
+    /// Распознанный текст до оформления, если оформление его изменило.
+    var raw: String?
     var error: String?
     /// Звук держим, пока текст не получен: «Повторить» без передиктовки.
     var audioName: String?

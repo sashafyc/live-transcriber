@@ -23,7 +23,7 @@ final class RecordingHUD {
     func update(for state: Dictation.State) {
         hideWork?.cancel()
         switch state {
-        case .recording, .sending:
+        case .recording, .sending, .formatting:
             show()
         case .failed:
             show()
@@ -64,6 +64,9 @@ struct HUDView: View {
             case .sending:
                 ProgressView().controlSize(.small)
                 Text("Распознаю…")
+            case .formatting:
+                ProgressView().controlSize(.small)
+                Text("Оформляю…")
             case .failed(let message):
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
                 Text(message).lineLimit(1)

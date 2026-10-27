@@ -5,14 +5,14 @@ import Observation
 /// Держишь клавишу — пишет микрофон, отпустил — текст распознаётся и вставляется туда, где курсор.
 @Observable final class Dictation {
     enum State: Equatable {
-        case idle, recording, sending
+        case idle, recording, sending, formatting
         case failed(String)
 
         var symbol: String {
             switch self {
             case .idle: "waveform"
             case .recording: "mic.fill"
-            case .sending: "ellipsis.circle"
+            case .sending, .formatting: "ellipsis.circle"
             case .failed: "exclamationmark.triangle"
             }
         }
@@ -129,10 +129,12 @@ import Observation
         state = .sending
         Task { @MainActor in
             do {
-                let text = try await Transcriber.transcribe(audio, setup)
+                let raw = try await Transcriber.transcribe(audio, setup)
                 try? FileManager.default.removeItem(at: audio)
+                let text = await format(raw)
                 history.update(id) {
                     $0.text = text
+                    $0.raw = text == raw ? nil : raw
                     $0.error = nil
                     $0.audioName = nil
                     $0.recognition = setup
@@ -144,6 +146,14 @@ import Observation
                 fail(error.localizedDescription)
             }
         }
+    }
+
+    /// Оформление — необязательный шаг: при любой его ошибке вставляется распознанный текст как есть.
+    @MainActor private func format(_ raw: String) async -> String {
+        let setup = settings.formatting
+        guard setup.formatter != .off, raw.split(whereSeparator: \.isWhitespace).count >= TextFormatter.minWords else { return raw }
+        state = .formatting
+        return (try? await TextFormatter.format(raw, setup)) ?? raw
     }
 
     private func fail(_ message: String) {

@@ -22,6 +22,8 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Live Transcriber записывает звук собеседника на созвоне, выход звука при этом не переключается.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Live Transcriber записывает голос для диктовки и созвонов.</string>
 </dict>
