@@ -4,11 +4,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
-swift build -c release --arch arm64
-BIN="$(swift build -c release --arch arm64 --show-bin-path)/LiveTranscriber"
-# Бандл собираем вне Документов: их синкает iCloud, и File Provider навешивает на .app
+# Всё собранное держим вне Документов: их синкает iCloud. Он выгружает файлы кэша сборки
+# из локального хранилища, и компилятор виснет на чтении (28.10.2026), а на .app навешивает
 # атрибуты сразу после xattr -cr — codesign падает с «detritus not allowed»
-APP="${TMPDIR:-/tmp}/lt-build/Live Transcriber.app"
+OUT="${TMPDIR:-/tmp}/lt-build"
+swift build -c release --arch arm64 --scratch-path "$OUT/spm"
+BIN="$(swift build -c release --arch arm64 --scratch-path "$OUT/spm" --show-bin-path)/LiveTranscriber"
+APP="$OUT/Live Transcriber.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/"

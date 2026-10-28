@@ -51,13 +51,27 @@ enum Transcriber {
     static let customEndpointKey = "customEndpoint"
 
     static func transcribe(_ audio: URL, _ setup: Recognition) async throws -> String {
-        let file = try Data(contentsOf: audio)
+        try await transcribe(try Data(contentsOf: audio), filename: audio.lastPathComponent, setup)
+    }
+
+    /// Кусок диктовки. Если текста подозрительно мало для его речи — бросаем, и диктовка распознаётся целиком.
+    static func transcribe(_ chunk: Segmenter.Chunk, _ setup: Recognition) async throws -> String {
+        // Кусок до 25 с распознаётся за 2–3 с: дольше 30 — сеть подвисла, лучше сразу распознать запись целиком
+        let text = try await transcribe(Segmenter.wav(chunk.samples), filename: "part.wav", setup, timeout: 30)
+        guard Double(text.count) >= chunk.speech * Segmenter.minLettersPerSecond else {
+            throw TranscriptionError(String(format: "%.1f с речи → %d букв", chunk.speech, text.count))
+        }
+        return text
+    }
+
+    /// По расширению имени OpenAI понимает формат звука.
+    static func transcribe(_ file: Data, filename: String, _ setup: Recognition, timeout: TimeInterval = 120) async throws -> String {
         let text: String
         switch setup.provider {
         case .openai, .custom:
-            text = try await openAICompatible(file, setup)["text"] as? String ?? ""
+            text = try await openAICompatible(file, setup, filename: filename, timeout: timeout)["text"] as? String ?? ""
         case .assemblyai:
-            text = try await assemblyAI(file, setup)
+            text = try await assemblyAIJob(file, languageJob(setup), uploadTimeout: timeout, pollFor: timeout)["text"] as? String ?? ""
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -90,10 +104,6 @@ enum Transcriber {
     }
 
     // MARK: AssemblyAI: загрузка → задание → опрос
-
-    static func assemblyAI(_ file: Data, _ setup: Recognition) async throws -> String {
-        try await assemblyAIJob(file, languageJob(setup))["text"] as? String ?? ""
-    }
 
     static func languageJob(_ setup: Recognition) -> [String: Any] {
         var job: [String: Any] = ["speech_models": [setup.model]]
@@ -175,7 +185,7 @@ enum Transcriber {
         for (name, value) in fields {
             body += Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8)
         }
-        body += Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\nContent-Type: \(filename.hasSuffix(".flac") ? "audio/flac" : "audio/mp4")\r\n\r\n".utf8)
+        body += Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\nContent-Type: \(filename.hasSuffix(".flac") ? "audio/flac" : filename.hasSuffix(".wav") ? "audio/wav" : "audio/mp4")\r\n\r\n".utf8)
         body += file
         body += Data("\r\n--\(boundary)--\r\n".utf8)
         return (body, "multipart/form-data; boundary=\(boundary)")

@@ -26,8 +26,9 @@ import Observation
     private(set) var accessibilityGranted = AXIsProcessTrusted()
     private let settings: AppSettings
     private let history: History
-    private var recorder: AVAudioRecorder?
-    private var meterTimer: Timer?
+    private var recorder: ChunkedRecorder?
+    /// Куски текущей диктовки, распознаваемые на лету.
+    private var parts: [Task<String, Error>] = []
     private var recordingID = UUID()
     private var recordStarted = Date()
     @ObservationIgnored private var hud: RecordingHUD!
@@ -71,55 +72,77 @@ import Observation
             return fail("Нет доступа к микрофону")
         }
         recordingID = UUID()
-        let format: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 16000,
-            AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32000,
-        ]
+        parts = []
+        let recorder = ChunkedRecorder(onLevel: { [weak self] decibels in
+            // речь обычно −45…−10 дБ
+            self?.levels.removeFirst()
+            self?.levels.append(max(0, min(1, (decibels + 50) / 40)))
+        }, onChunk: { [weak self] chunk in self?.sendPart(chunk) })
         do {
-            let recorder = try AVAudioRecorder(url: audioURL(recordingID), settings: format)
-            recorder.isMeteringEnabled = true
-            guard recorder.record() else { throw TranscriptionError("Микрофон не отдаёт звук") }
+            try recorder.start()
             self.recorder = recorder
             recordStarted = Date()
             levels = levels.map { _ in 0 }
-            meterTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.sampleLevel() }
             state = .recording
         } catch {
             fail(error.localizedDescription)
         }
     }
 
-    private func sampleLevel() {
-        guard let recorder else { return }
-        recorder.updateMeters()
-        let decibels = recorder.averagePower(forChannel: 0)  // −160…0, речь обычно −45…−10
-        levels.removeFirst()
-        levels.append(max(0, min(1, (decibels + 50) / 40)))
-    }
-
-    private func stopMeter() {
-        meterTimer?.invalidate()
-        meterTimer = nil
+    private func sendPart(_ chunk: Segmenter.Chunk) {
+        let setup = settings.dictation, number = parts.count + 1, sent = Date()
+        parts.append(Task {
+            let text = try await Transcriber.transcribe(chunk, setup)
+            Log.info(String(format: "Диктовка: кусок %d, %.1f с звука, распознан за %.1f с", number,
+                            Double(chunk.samples.count) / Segmenter.rate, Date().timeIntervalSince(sent)))
+            return text
+        })
     }
 
     private func cancel() {
-        stopMeter()
-        recorder?.stop()
+        recorder?.cancel()
         recorder = nil
-        try? FileManager.default.removeItem(at: audioURL(recordingID))
+        parts.forEach { $0.cancel() }
+        parts = []
         state = .idle
     }
 
     private func stop() {
         guard let recorder else { return }
-        let seconds = recorder.currentTime
-        stopMeter()
-        recorder.stop()
+        guard recorder.seconds >= 0.4 else { return cancel() }  // случайное нажатие
         self.recorder = nil
-        guard seconds >= 0.4 else { return cancel() }  // случайное нажатие
-        history.add(DictationEntry(id: recordingID, date: recordStarted, seconds: seconds,
-                                   recognition: settings.dictation, audioName: "\(recordingID).m4a"))
-        send(recordingID, paste: true)
+        let id = recordingID, date = recordStarted, setup = settings.dictation
+        recorder.stop { [self] all, tail in
+            tail.map(sendPart)
+            let parts = self.parts
+            self.parts = []
+            do {
+                try Segmenter.wav(all).write(to: audioURL(id))
+            } catch {
+                return fail("Не записался звук: \(error.localizedDescription)")
+            }
+            history.add(DictationEntry(id: id, date: date, seconds: Double(all.count) / Segmenter.rate,
+                                       recognition: setup, audioName: audioURL(id).lastPathComponent))
+            collect(id, parts, setup)
+        }
+    }
+
+    /// Собирает куски по порядку. Если какой-то не распознался — распознаём запись целиком.
+    private func collect(_ id: UUID, _ parts: [Task<String, Error>], _ setup: Recognition) {
+        state = .sending
+        let released = Date()
+        Task { @MainActor in
+            var texts: [String] = []
+            do {
+                for part in parts { texts.append(try await part.value) }
+            } catch {
+                Log.error("Диктовка: кусок не распознался (\(error.localizedDescription)), распознаю запись целиком")
+                return send(id, paste: true)
+            }
+            Log.info(String(format: "Диктовка: %d кусков, после отпускания ждали %.1f с", parts.count,
+                            Date().timeIntervalSince(released)))
+            await deliver(id, texts.filter { !$0.isEmpty }.joined(separator: " "), setup, paste: true)
+        }
     }
 
     /// Распознать запись из истории. После повтора текст не вставляется: курсор уже где-то ещё.
@@ -129,23 +152,27 @@ import Observation
         state = .sending
         Task { @MainActor in
             do {
-                let raw = try await Transcriber.transcribe(audio, setup)
-                try? FileManager.default.removeItem(at: audio)
-                let text = await format(raw)
-                history.update(id) {
-                    $0.text = text
-                    $0.raw = text == raw ? nil : raw
-                    $0.error = nil
-                    $0.audioName = nil
-                    $0.recognition = setup
-                }
-                state = .idle
-                if shouldPaste, !text.isEmpty { paste(text) }
+                await deliver(id, try await Transcriber.transcribe(audio, setup), setup, paste: shouldPaste)
             } catch {
                 history.update(id) { $0.error = error.localizedDescription }
                 fail(error.localizedDescription)
             }
         }
+    }
+
+    /// Текст распознан: оформить, записать в историю, вставить.
+    @MainActor private func deliver(_ id: UUID, _ raw: String, _ setup: Recognition, paste shouldPaste: Bool) async {
+        let text = await format(raw)
+        history.update(id) {
+            if let audio = $0.audioURL { try? FileManager.default.removeItem(at: audio) }
+            $0.text = text
+            $0.raw = text == raw ? nil : raw
+            $0.error = nil
+            $0.audioName = nil
+            $0.recognition = setup
+        }
+        state = .idle
+        if shouldPaste, !text.isEmpty { paste(text) }
     }
 
     /// Оформление — необязательный шаг: при любой его ошибке вставляется распознанный текст как есть.
@@ -161,7 +188,7 @@ import Observation
         state = .failed(message)
     }
 
-    private func audioURL(_ id: UUID) -> URL { History.audioDir.appendingPathComponent("\(id).m4a") }
+    private func audioURL(_ id: UUID) -> URL { History.audioDir.appendingPathComponent("\(id).wav") }
 }
 
 /// Вставка через буфер обмена и Cmd+V; прежнее содержимое буфера возвращается.

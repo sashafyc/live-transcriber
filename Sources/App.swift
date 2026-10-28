@@ -12,6 +12,7 @@ struct LiveTranscriberApp: App {
         Transcriber.checkFromCommandLine()
         TextFormatter.checkFromCommandLine()
         CallCapture.checkFromCommandLine()
+        ChunkedRecorder.checkFromCommandLine()
         let settings = AppSettings(), history = History()
         Log.info("=== Live Transcriber \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") запущен ===")
         LegacyConfig.importOnce(settings)
