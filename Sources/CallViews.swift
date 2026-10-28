@@ -252,7 +252,11 @@ struct CallSettings: View {
                 .onChange(of: settings.calls.provider) { _, provider in
                     settings.calls.model = provider.suggestedModels.first ?? ""
                 }
-                ModelField(model: $settings.calls.model, suggestions: settings.calls.provider.suggestedModels, hints: Provider.hints)
+                if settings.calls.provider == .chatgpt {
+                    Text(Provider.chatgptHint).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ModelField(model: $settings.calls.model, suggestions: settings.calls.provider.suggestedModels, hints: Provider.hints)
+                }
                 Picker("Язык", selection: $settings.calls.language) {
                     Text("Русский").tag("ru")
                     Text("English").tag("en")

@@ -1,7 +1,7 @@
 import Foundation
 
 enum Provider: String, Codable, CaseIterable, Identifiable {
-    case openai, assemblyai, custom
+    case openai, assemblyai, chatgpt, custom
 
     var id: String { rawValue }
 
@@ -9,6 +9,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openai: "OpenAI"
         case .assemblyai: "AssemblyAI"
+        case .chatgpt: "ChatGPT (по подписке)"
         case .custom: "Свой адрес (OpenAI-совместимый)"
         }
     }
@@ -19,9 +20,11 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
         case .openai: ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"]
         // 28.10.2026 пакетный API принимает только эти; universal-3-6-pro пока только в потоковом
         case .assemblyai: ["universal-2", "universal-3-5-pro", "universal-3-pro"]
-        case .custom: []
+        case .chatgpt, .custom: []
         }
     }
+
+    static let chatgptHint = "Без ключа и без оплаты за минуты — входит в подписку ChatGPT. Нужно приложение ChatGPT с выполненным входом в Codex, модель выбирает ChatGPT. Работает не со всех сетей: если ответит «проверка Cloudflare», смени сервер VPN."
 
     /// Подсказка под полем модели.
     static let hints = [
@@ -68,7 +71,7 @@ enum Transcriber {
     static func transcribe(_ file: Data, filename: String, _ setup: Recognition, timeout: TimeInterval = 120) async throws -> String {
         let text: String
         switch setup.provider {
-        case .openai, .custom:
+        case .openai, .chatgpt, .custom:
             text = try await openAICompatible(file, setup, filename: filename, timeout: timeout)["text"] as? String ?? ""
         case .assemblyai:
             text = try await assemblyAIJob(file, languageJob(setup), uploadTimeout: timeout, pollFor: timeout)["text"] as? String ?? ""
@@ -81,6 +84,9 @@ enum Transcriber {
     /// Ответ целиком: звонкам кроме текста нужны отрезки с временем (`verbose_json`).
     static func openAICompatible(_ file: Data, _ setup: Recognition, filename: String = "audio.m4a",
                                  format: String = "json", timeout: TimeInterval = 120) async throws -> [String: Any] {
+        if setup.provider == .chatgpt {
+            return ["text": try await ChatGPTSubscription.transcribe(file, filename: filename, language: setup.language, timeout: timeout)]
+        }
         let custom = setup.provider == .custom
         let endpoint = custom ? UserDefaults.standard.string(forKey: customEndpointKey) ?? ""
                               : "https://api.openai.com/v1/audio/transcriptions"

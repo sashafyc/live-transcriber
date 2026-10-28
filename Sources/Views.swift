@@ -134,7 +134,11 @@ struct DictationSettings: View {
                 .onChange(of: settings.dictation.provider) { _, provider in
                     settings.dictation.model = provider.suggestedModels.first ?? ""
                 }
-                ModelField(model: $settings.dictation.model, suggestions: settings.dictation.provider.suggestedModels, hints: Provider.hints)
+                if settings.dictation.provider == .chatgpt {
+                    Text(Provider.chatgptHint).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ModelField(model: $settings.dictation.model, suggestions: settings.dictation.provider.suggestedModels, hints: Provider.hints)
+                }
                 Picker("Язык", selection: $settings.dictation.language) {
                     Text("Русский").tag("ru")
                     Text("English").tag("en")

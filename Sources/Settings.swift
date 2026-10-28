@@ -56,7 +56,7 @@ struct Hotkey: Identifiable {
     func adjustToKeys(firstRun: Bool) {
         let has = { !Keychain.get($0).isEmpty }
         func recognition(_ current: Recognition, prefer order: [Provider]) -> Recognition {
-            guard current.provider != .custom, firstRun || !has(current.provider.rawValue),
+            guard ![.custom, .chatgpt].contains(current.provider), firstRun || !has(current.provider.rawValue),
                   let provider = order.first(where: { has($0.rawValue) }) else { return current }
             return Recognition(provider: provider, model: provider.suggestedModels.first ?? "", language: current.language)
         }
