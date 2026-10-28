@@ -7,13 +7,13 @@ import SwiftUI
 enum Windows {
     private static var open: [String: NSWindow] = [:]
 
-    static func show(_ id: String, _ title: String, _ view: some View) {
+    static func show(_ id: String, _ title: String, _ view: some View, floating: Bool = true) {
         open[id]?.close()
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
         window.title = title
         window.styleMask = [.titled, .closable, .resizable]
         window.isReleasedWhenClosed = false
-        window.level = .floating  // окно появляется само и не должно уйти за другие
+        if floating { window.level = .floating }  // окно появляется само и не должно уйти за другие
         window.center()
         open[id] = window
         NSApp.activate()

@@ -18,10 +18,13 @@ struct LiveTranscriberApp: App {
         LegacyConfig.importOnce(settings)
         _settings = State(initialValue: settings)
         _history = State(initialValue: history)
-        _dictation = State(initialValue: Dictation(settings: settings, history: history))
+        let dictation = Dictation(settings: settings, history: history)
+        _dictation = State(initialValue: dictation)
         let calls = Calls(settings: settings)
         _calls = State(initialValue: calls)
-        if settings.startWindowOnLaunch {
+        if Welcome.needed {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Welcome.show(settings, dictation) }
+        } else if settings.startWindowOnLaunch {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { calls.openStart() }
         }
         // Автозапуск включаем один раз; дальше им управляет переключатель в настройках.
@@ -74,6 +77,7 @@ struct MenuContent: View {
         Divider()
         CallMenuItems(calls: calls)
         Divider()
+        Button("Первая настройка…") { Welcome.show(settings, dictation) }
         Button("История диктовок…") {
             NSApp.activate()
             openWindow(id: "history")
