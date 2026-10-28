@@ -11,8 +11,10 @@ enum Welcome {
     }
 
     static func show(_ settings: AppSettings, _ dictation: Dictation) {
+        // Новый человек — тот, у кого при открытии окна не было ни одного ключа: настроенное не трогаем
+        let fresh = needed
         Windows.show("welcome", "Live Transcriber — первая настройка", WelcomeView(settings: settings, dictation: dictation) {
-            settings.adjustToKeys(firstRun: !UserDefaults.standard.bool(forKey: doneKey))
+            settings.adjustToKeys(firstRun: fresh)
             UserDefaults.standard.set(true, forKey: doneKey)
             Windows.close("welcome")
         }, floating: false)  // человек будет ходить в Системные настройки — окно не должно их закрывать
@@ -28,7 +30,7 @@ struct WelcomeView: View {
     var body: some View {
         Form {
             Section {
-                Text("Диктовка по клавише Fn и запись созвонов с расшифровкой и итогом. Распознают сервисы по твоим ключам: платишь им напрямую, копейки за минуту. Три шага — и можно говорить.")
+                Text("Диктовка по клавише Fn и запись созвонов с расшифровкой и итогом. Распознают сервисы по твоим ключам: платишь им напрямую, копейки за минуту. Нужны два ключа — три шага, и можно говорить.")
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -55,33 +57,34 @@ struct WelcomeView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
 
-            Section("2. Ключ OpenAI — главный") {
-                KeyStep(account: "openai", title: "Ключ OpenAI", steps: [
-                    ("Зайди на platform.openai.com и войди или зарегистрируйся.", nil),
-                    ("Пополни баланс: хватит $5 на месяцы диктовки.", "https://platform.openai.com/settings/organization/billing/overview"),
-                    ("Создай ключ: Create new secret key → скопируй его и вставь ниже.", "https://platform.openai.com/api-keys"),
-                ], note: "Одного этого ключа хватает на всё: диктовку, оформление текста, созвоны и итоги. Из России OpenAI работает только с VPN.") {
+            Section("2. Ключ AssemblyAI — распознавание") {
+                KeyStep(account: "assemblyai", title: "Ключ AssemblyAI", steps: [
+                    ("Зарегистрируйся на assemblyai.com.", "https://www.assemblyai.com/dashboard/signup"),
+                    ("Скопируй ключ из API Keys и вставь ниже.", "https://www.assemblyai.com/dashboard/api-keys"),
+                ], note: "Переводит речь в текст — и диктовку, и созвоны, а на созвоне различает, кто что сказал. При регистрации дают бесплатный баланс на сотни часов. Работает без VPN.") {
                     try await Transcriber.transcribe(try Transcriber.testRecording(),
-                                                     Recognition(provider: .openai, model: "gpt-4o-transcribe", language: "ru"))
+                                                     Recognition(provider: .assemblyai, model: "universal-2", language: "ru"))
                 }
             }
 
-            Section("3. По желанию") {
+            Section("3. Один ключ на выбор — оформление и итоги") {
+                Text("Нейросеть расставит в диктовке абзацы и пунктуацию, уберёт «ну» и «короче» и сделает итог созвона. Хватит одного ключа: DeepSeek дешевле и работает без VPN, OpenAI ещё и распознаёт диктовку быстрее.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 KeyStep(account: "deepseek", title: "Ключ DeepSeek", steps: [
-                    ("Пополни баланс от $2 на platform.deepseek.com.", "https://platform.deepseek.com/top_up"),
+                    ("Пополни баланс на platform.deepseek.com: $2–5 хватит на месяцы.", "https://platform.deepseek.com/top_up"),
                     ("Создай ключ: Create new API key → вставь ниже.", "https://platform.deepseek.com/api_keys"),
-                ], note: "Оформляет диктовку быстрее и дешевле OpenAI и работает без VPN. Если OpenAI не ответит, итог созвона сделает DeepSeek.") {
+                ], note: "Дешевле всех и без VPN.") {
                     let (status, json) = try await Formatter.deepseek.chat("deepseek-flash", [["role": "user", "content": "ответь словом ок"]],
                                                                            temperature: 0, maxTokens: 16, timeout: 30)
                     guard status == 200 else { throw TranscriptionError("DeepSeek: \(Transcriber.errorText(status, json))") }
                     return ""
                 }
-                KeyStep(account: "assemblyai", title: "Ключ AssemblyAI", steps: [
-                    ("Зарегистрируйся на assemblyai.com: новым аккаунтам дают бесплатные минуты.", "https://www.assemblyai.com/dashboard/signup"),
-                    ("Скопируй ключ из API Keys → вставь ниже.", "https://www.assemblyai.com/dashboard/api-keys"),
-                ], note: "Различает голоса на созвоне: в расшифровке будет видно, кто что сказал.") {
+                KeyStep(account: "openai", title: "Ключ OpenAI", steps: [
+                    ("Пополни баланс на platform.openai.com: $5 хватит на месяцы.", "https://platform.openai.com/settings/organization/billing/overview"),
+                    ("Создай ключ: Create new secret key → вставь ниже.", "https://platform.openai.com/api-keys"),
+                ], note: "Аккуратнее всех с итогами созвонов, а диктовку можно переключить на распознавание через OpenAI: ждать 1–2 секунды вместо 3–5. Из России — только с VPN.") {
                     try await Transcriber.transcribe(try Transcriber.testRecording(),
-                                                     Recognition(provider: .assemblyai, model: "universal-2", language: "ru"))
+                                                     Recognition(provider: .openai, model: "gpt-4o-transcribe", language: "ru"))
                 }
             }
 

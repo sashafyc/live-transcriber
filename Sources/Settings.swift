@@ -35,7 +35,7 @@ struct Hotkey: Identifiable {
 
     init() {
         let defaults = UserDefaults.standard
-        dictation = Self.load("dictation") ?? Recognition(provider: .openai, model: "gpt-4o-transcribe", language: "ru")
+        dictation = Self.load("dictation") ?? Recognition(provider: .assemblyai, model: "universal-2", language: "ru")
         var formatting: Formatting = Self.load("formatting") ?? Formatting(formatter: .off, model: "")
         // Старое имя DeepSeek уже отвечает моделью V4.1 Flash и пропало из документации
         if formatting.model == "deepseek-chat" { formatting.model = "deepseek-flash" }
@@ -51,11 +51,12 @@ struct Hotkey: Identifiable {
         startWindowOnLaunch = defaults.bool(forKey: "startWindowOnLaunch")
     }
 
-    /// Ставит каждой задаче провайдера, ключ которого есть. На первом запуске ещё и включает оформление.
+    /// Ставит каждой задаче провайдера, ключ которого есть. На первом запуске распознавание
+    /// ставится на AssemblyAI (сотни бесплатных часов) и включается оформление.
     func adjustToKeys(firstRun: Bool) {
         let has = { !Keychain.get($0).isEmpty }
         func recognition(_ current: Recognition, prefer order: [Provider]) -> Recognition {
-            guard current.provider != .custom, !has(current.provider.rawValue),
+            guard current.provider != .custom, firstRun || !has(current.provider.rawValue),
                   let provider = order.first(where: { has($0.rawValue) }) else { return current }
             return Recognition(provider: provider, model: provider.suggestedModels.first ?? "", language: current.language)
         }
@@ -64,7 +65,7 @@ struct Hotkey: Identifiable {
             let formatter = order.first { has($0.rawValue) } ?? .off
             return Formatting(formatter: formatter, model: formatter.suggestedModels.first ?? "")
         }
-        dictation = recognition(dictation, prefer: [.openai, .assemblyai])
+        dictation = recognition(dictation, prefer: [.assemblyai, .openai])
         calls = recognition(calls, prefer: [.assemblyai, .openai])
         formatting = text(formatting, prefer: [.deepseek, .openai])
         let made = text(summary, prefer: [.openai, .deepseek])
