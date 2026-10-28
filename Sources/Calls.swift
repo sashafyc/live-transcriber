@@ -180,7 +180,7 @@ import UserNotifications
 
     private func summarize(_ record: CallRecord, _ body: String) async -> String? {
         do {
-            let summary = try await Summary.make(body, prompt: record.prompt)
+            let summary = try await Summary.make(body, prompt: record.prompt, with: settings.summary)
             record.writeSummary(summary)
             Log.info("Итог готов: \(summary.count) символов")
             return summary

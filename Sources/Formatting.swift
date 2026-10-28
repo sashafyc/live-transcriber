@@ -1,6 +1,6 @@
 import Foundation
 
-/// Оформление диктовки нейросетью: абзацы, пунктуация, гладкие фразы без потери смысла.
+/// Нейросеть для текста: оформление диктовки и итоги созвонов.
 enum Formatter: String, Codable, CaseIterable, Identifiable {
     case off, openai, deepseek
 
@@ -19,12 +19,44 @@ enum Formatter: String, Codable, CaseIterable, Identifiable {
         case .off: []
         // gpt-4.1 и gpt-4o OpenAI убирает из API 14.01.2027, gpt-4.1-nano уже отключён
         case .openai: ["gpt-6-luna", "gpt-5-mini", "gpt-5-nano"]
-        case .deepseek: ["deepseek-chat"]
+        case .deepseek: ["deepseek-flash", "deepseek-v4-pro"]
         }
     }
 
     var endpoint: String {
         self == .deepseek ? "https://api.deepseek.com/chat/completions" : "https://api.openai.com/v1/chat/completions"
+    }
+
+    /// Запрос к chat/completions. Рассуждения выключены: оформлению и итогам они дают только задержку.
+    func chat(_ model: String, _ messages: [[String: String]], temperature: Double, maxTokens: Int? = nil,
+              timeout: TimeInterval) async throws -> (status: Int, json: [String: Any]) {
+        let key = Keychain.get(rawValue)
+        guard !key.isEmpty else { throw TranscriptionError("Нет ключа \(title) — открой настройки") }
+        var request = URLRequest(url: URL(string: endpoint)!, timeoutInterval: timeout)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["model": model, "messages": messages]
+        if self == .openai, Self.isReasoning(model) {
+            // Рассуждающие модели OpenAI не принимают temperature. Первые gpt-5 знают только «minimal», более новые — «none»
+            let original = model.hasPrefix("gpt-5") && !model.hasPrefix("gpt-5.")
+            body["reasoning_effort"] = original ? "minimal" : "none"
+        } else {
+            body["temperature"] = temperature
+        }
+        // У DeepSeek V4 рассуждения включены по умолчанию
+        if self == .deepseek { body["thinking"] = ["type": "disabled"] }
+        if let maxTokens { body[self == .openai ? "max_completion_tokens" : "max_tokens"] = maxTokens }
+        return try await Transcriber.call(request, try JSONSerialization.data(withJSONObject: body))
+    }
+
+    static func reply(_ json: [String: Any]) -> String? {
+        let message = (json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any]
+        return (message?["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isReasoning(_ model: String) -> Bool {
+        ["gpt-5", "gpt-6", "o1", "o3", "o4"].contains { model.hasPrefix($0) }
     }
 }
 
@@ -54,32 +86,11 @@ enum TextFormatter {
         try await complete(text, setup).text
     }
 
-    /// Рассуждающие модели (gpt-5…, o…) не принимают temperature; рассуждать тут не о чем — минимум усилий.
-    private static func isReasoning(_ model: String) -> Bool {
-        ["gpt-5", "gpt-6", "o1", "o3", "o4"].contains { model.hasPrefix($0) }
-    }
-
     private static func complete(_ text: String, _ setup: Formatting) async throws -> (text: String, usage: [String: Any]) {
-        let key = Keychain.get(setup.formatter.rawValue)
-        guard !key.isEmpty else { throw TranscriptionError("Нет ключа \(setup.formatter.title) для оформления") }
-        var request = URLRequest(url: URL(string: setup.formatter.endpoint)!, timeoutInterval: 30)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = [
-            "model": setup.model,
-            "messages": [["role": "system", "content": instructions], ["role": "user", "content": "<диктовка>\n\(text)\n</диктовка>"]],
-        ]
-        if isReasoning(setup.model) {
-            // Первые gpt-5 знают только «minimal», более новые — «none»
-            let original = setup.model.hasPrefix("gpt-5") && !setup.model.hasPrefix("gpt-5.")
-            body["reasoning_effort"] = original ? "minimal" : "none"
-        } else {
-            body["temperature"] = 0.2
-        }
-        let (status, json) = try await Transcriber.call(request, try JSONSerialization.data(withJSONObject: body))
-        let message = ((json["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String
-        guard status == 200, let result = message?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty else {
+        let (status, json) = try await setup.formatter.chat(setup.model, [
+            ["role": "system", "content": instructions], ["role": "user", "content": "<диктовка>\n\(text)\n</диктовка>"],
+        ], temperature: 0.2, timeout: 30)
+        guard status == 200, let result = Formatter.reply(json), !result.isEmpty else {
             throw TranscriptionError("\(setup.formatter.title): \(Transcriber.errorText(status, json))")
         }
         // Заметно короче исходника — значит, модель что-то выкинула или пересказала: такое не берём.

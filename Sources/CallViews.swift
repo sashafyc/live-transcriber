@@ -237,41 +237,55 @@ struct CallMenuItems: View {
 }
 
 /// Своё распознавание для звонков: дорожки и голоса делит только AssemblyAI.
-struct CallSettingsSection: View {
+struct CallSettings: View {
     @Bindable var settings: AppSettings
     @State private var telegramToken = Keychain.get("telegram")
     @State private var check = ""
     @State private var checking = false
 
     var body: some View {
-        Section("Созвоны") {
-            Picker("Провайдер", selection: $settings.calls.provider) {
-                ForEach(Provider.allCases) { Text($0.title).tag($0) }
+        Form {
+            Section("Распознавание") {
+                Picker("Провайдер", selection: $settings.calls.provider) {
+                    ForEach(Provider.allCases) { Text($0.title).tag($0) }
+                }
+                .onChange(of: settings.calls.provider) { _, provider in
+                    settings.calls.model = provider.suggestedModels.first ?? ""
+                }
+                ModelField(model: $settings.calls.model, suggestions: settings.calls.provider.suggestedModels)
+                Picker("Язык", selection: $settings.calls.language) {
+                    Text("Русский").tag("ru")
+                    Text("English").tag("en")
+                    Text("Определять сам").tag("auto")
+                }
+                if settings.calls.provider != .assemblyai {
+                    Text("Голоса на одной дорожке делит только AssemblyAI. Здесь дорожки «Я» и «Собеседник» расшифруются по отдельности.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
             }
-            .onChange(of: settings.calls.provider) { _, provider in
-                settings.calls.model = provider.suggestedModels.first ?? ""
+            Section("Итог") {
+                Picker("Делать через", selection: $settings.summary.formatter) {
+                    ForEach(Formatter.allCases.filter { $0 != .off }) { Text($0.title).tag($0) }
+                }
+                .onChange(of: settings.summary.formatter) { _, formatter in
+                    settings.summary.model = formatter.suggestedModels.first ?? ""
+                }
+                ModelField(model: $settings.summary.model, suggestions: settings.summary.formatter.suggestedModels)
+                LabeledContent("Задание для итога") {
+                    TextEditor(text: $settings.callPrompt).font(.system(size: 11)).frame(height: 90)
+                }
             }
-            ModelField(model: $settings.calls.model, suggestions: settings.calls.provider.suggestedModels)
-            Picker("Язык", selection: $settings.calls.language) {
-                Text("Русский").tag("ru")
-                Text("English").tag("en")
-                Text("Определять сам").tag("auto")
+            Section("Telegram") {
+                Toggle("Отправлять итог в Telegram", isOn: $settings.sendToTelegram)
+                SecureField("Токен бота", text: $telegramToken)
+                    .onChange(of: telegramToken) { _, key in Keychain.set("telegram", key) }
+                TextField("Чат", text: $settings.telegramChat, prompt: Text("ссылка на сообщение в чате или теме"))
             }
-            if settings.calls.provider != .assemblyai {
-                Text("Голоса на одной дорожке делит только AssemblyAI. Здесь дорожки «Я» и «Собеседник» расшифруются по отдельности.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            SecureField("Токен Telegram-бота", text: $telegramToken)
-                .onChange(of: telegramToken) { _, key in Keychain.set("telegram", key) }
-            TextField("Чат Telegram", text: $settings.telegramChat, prompt: Text("ссылка на сообщение в чате или теме"))
-            Toggle("Отправлять итог в Telegram", isOn: $settings.sendToTelegram)
-            Toggle("Показывать окно записи при запуске", isOn: $settings.startWindowOnLaunch)
-            LabeledContent("Задание для итога") {
-                TextEditor(text: $settings.callPrompt).font(.system(size: 11)).frame(height: 90)
-            }
-            HStack {
-                Button(checking ? "Проверяю…" : "Проверить ключи") { runCheck() }.disabled(checking)
-                Text(check).foregroundStyle(.secondary).textSelection(.enabled)
+            Section {
+                HStack {
+                    Button(checking ? "Проверяю…" : "Проверить ключи") { runCheck() }.disabled(checking)
+                    Text(check).foregroundStyle(.secondary).textSelection(.enabled)
+                }
             }
         }
     }
@@ -279,7 +293,7 @@ struct CallSettingsSection: View {
     private func runCheck() {
         checking = true
         check = ""
-        let chat = settings.telegramChat
+        let chat = settings.telegramChat, summary = settings.summary
         Task {
             var lines: [String] = []
             do {
@@ -292,7 +306,7 @@ struct CallSettingsSection: View {
             } catch {
                 lines.append("❌ AssemblyAI: \(error.localizedDescription)")
             }
-            lines.append(await Summary.checkKey())
+            lines.append(await Summary.checkKey(summary))
             lines.append(await Telegram.check(chat: chat))
             check = lines.joined(separator: "\n")
             checking = false

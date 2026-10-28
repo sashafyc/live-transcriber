@@ -1,6 +1,6 @@
 import Foundation
 
-/// Итог созвона через DeepSeek. Длинные разговоры сводятся по частям.
+/// Итог созвона нейросетью из настроек. Длинные разговоры сводятся по частям.
 enum Summary {
     static let defaultPrompt = """
         Итог созвона. Формат:
@@ -21,12 +21,12 @@ enum Summary {
     private static let maxDirect = 120_000
     private static let part = 90_000
 
-    static func make(_ transcript: String, prompt: String) async throws -> String {
+    static func make(_ transcript: String, prompt: String, with setup: Formatting) async throws -> String {
         let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw TranscriptionError("Транскрипт пустой, сводить нечего") }
         guard text.count > maxDirect else {
             Log.info("Итог: один запрос, \(text.count) символов")
-            return try await ask(prompt, text)
+            return try await ask(prompt, text, setup)
         }
         let parts = stride(from: 0, to: text.count, by: part).map {
             String(text.dropFirst($0).prefix(part))
@@ -35,42 +35,32 @@ enum Summary {
         var digests: [String] = []
         for (index, piece) in parts.enumerated() {
             let digest = try await ask("Это часть \(index + 1) из \(parts.count) длинного разговора. Выпиши подробно всё важное: "
-                + "мысли, факты, цифры, договорённости. Без вступления и выводов.", piece, maxTokens: 3000)
+                + "мысли, факты, цифры, договорённости. Без вступления и выводов.", piece, setup, maxTokens: 3000)
             digests.append("--- Часть \(index + 1) ---\n\(digest)")
         }
-        return try await ask(prompt + "\n\nНиже — конспекты частей разговора по порядку.", digests.joined(separator: "\n\n"))
+        return try await ask(prompt + "\n\nНиже — конспекты частей разговора по порядку.", digests.joined(separator: "\n\n"), setup)
     }
 
-    private static func ask(_ prompt: String, _ text: String, maxTokens: Int = 4000) async throws -> String {
-        let (status, json) = try await request([
+    private static func ask(_ prompt: String, _ text: String, _ setup: Formatting, maxTokens: Int = 4000) async throws -> String {
+        let (status, json) = try await setup.formatter.chat(setup.model, [
             ["role": "system", "content": system],
             ["role": "user", "content": "\(prompt)\n\nТранскрипт:\n\n\(text)"],
-        ], maxTokens: maxTokens, timeout: 300)
-        guard status == 200, let choices = json["choices"] as? [[String: Any]],
-              let content = (choices.first?["message"] as? [String: Any])?["content"] as? String else {
-            throw TranscriptionError("DeepSeek: \(Transcriber.errorText(status, json))")
+        ], temperature: 0.3, maxTokens: maxTokens, timeout: 300)
+        guard status == 200, let content = Formatter.reply(json) else {
+            throw TranscriptionError("\(setup.formatter.title): \(Transcriber.errorText(status, json))")
         }
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return content
     }
 
-    private static func request(_ messages: [[String: String]], maxTokens: Int, timeout: TimeInterval) async throws -> (Int, [String: Any]) {
-        let key = Keychain.get("deepseek")
-        guard !key.isEmpty else { throw TranscriptionError("Нет ключа DeepSeek — открой настройки") }
-        var request = URLRequest(url: URL(string: "https://api.deepseek.com/chat/completions")!, timeoutInterval: timeout)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["model": "deepseek-chat", "messages": messages, "temperature": 0.3, "max_tokens": maxTokens]
-        return try await Transcriber.call(request, try JSONSerialization.data(withJSONObject: body))
-    }
-
-    static func checkKey() async -> String {
+    static func checkKey(_ setup: Formatting) async -> String {
+        let name = "\(setup.formatter.title) \(setup.model)"
         do {
-            let (status, json) = try await request([["role": "user", "content": "ответь словом ок"]], maxTokens: 5, timeout: 30)
+            let (status, json) = try await setup.formatter.chat(setup.model, [["role": "user", "content": "ответь словом ок"]],
+                                                                temperature: 0, maxTokens: 16, timeout: 30)
             switch status {
-            case 200: return "✅ DeepSeek: ключ рабочий"
-            case 402: return "❌ DeepSeek: на балансе нет средств"
-            default: return "❌ DeepSeek: \(Transcriber.errorText(status, json))"
+            case 200: return "✅ \(name): ключ и модель рабочие"
+            case 402: return "❌ \(name): на балансе нет средств"
+            default: return "❌ \(name): \(Transcriber.errorText(status, json))"
             }
         } catch {
             return "❌ \(error.localizedDescription)"

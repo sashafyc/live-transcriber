@@ -24,6 +24,7 @@ struct Hotkey: Identifiable {
         didSet { UserDefaults.standard.set(customEndpoint, forKey: Transcriber.customEndpointKey) }
     }
     var calls: Recognition { didSet { store(calls, "calls") } }
+    var summary: Formatting { didSet { store(summary, "summary") } }
     /// Ссылка на чат или тему: из неё же берётся номер темы.
     var telegramChat: String { didSet { UserDefaults.standard.set(telegramChat, forKey: "telegramChat") } }
     var sendToTelegram: Bool { didSet { UserDefaults.standard.set(sendToTelegram, forKey: "sendToTelegram") } }
@@ -35,11 +36,15 @@ struct Hotkey: Identifiable {
     init() {
         let defaults = UserDefaults.standard
         dictation = Self.load("dictation") ?? Recognition(provider: .openai, model: "gpt-4o-transcribe", language: "ru")
-        formatting = Self.load("formatting") ?? Formatting(formatter: .off, model: "")
+        var formatting: Formatting = Self.load("formatting") ?? Formatting(formatter: .off, model: "")
+        // Старое имя DeepSeek уже отвечает моделью V4.1 Flash и пропало из документации
+        if formatting.model == "deepseek-chat" { formatting.model = "deepseek-flash" }
+        self.formatting = formatting
         hotkeyCode = UInt16(defaults.object(forKey: "hotkey") as? Int ?? 63)
         customEndpoint = defaults.string(forKey: Transcriber.customEndpointKey) ?? ""
         // Русский пакетно точно знает universal-2: на нём версии 1.x писали все звонки
         calls = Self.load("calls") ?? Recognition(provider: .assemblyai, model: "universal-2", language: "ru")
+        summary = Self.load("summary") ?? Formatting(formatter: .deepseek, model: "deepseek-flash")
         telegramChat = defaults.string(forKey: "telegramChat") ?? ""
         sendToTelegram = defaults.object(forKey: "sendToTelegram") as? Bool ?? true
         callPrompt = defaults.string(forKey: "callPrompt") ?? Summary.defaultPrompt

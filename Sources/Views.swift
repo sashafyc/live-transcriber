@@ -47,20 +47,65 @@ struct HistoryView: View {
     }
 }
 
+/// Разделы настроек — список слева, как в Системных настройках.
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case dictation, calls, keys, general
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .dictation: "Диктовка"
+        case .calls: "Созвоны"
+        case .keys: "Ключи"
+        case .general: "Основные"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .dictation: "mic"
+        case .calls: "phone"
+        case .keys: "key"
+        case .general: "gearshape"
+        }
+    }
+}
+
 struct SettingsView: View {
     @Bindable var settings: AppSettings
     let dictation: Dictation
-    @State private var openaiKey = Keychain.get("openai")
-    @State private var assemblyaiKey = Keychain.get("assemblyai")
-    @State private var customKey = Keychain.get("custom")
-    @State private var deepseekKey = Keychain.get("deepseek")
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var pane: SettingsPane? = .dictation
+
+    var body: some View {
+        NavigationSplitView {
+            List(SettingsPane.allCases, selection: $pane) { Label($0.title, systemImage: $0.symbol) }
+                .navigationSplitViewColumnWidth(170)
+                .toolbar(removing: .sidebarToggle)
+        } detail: {
+            Group {
+                switch pane ?? .dictation {
+                case .dictation: DictationSettings(settings: settings)
+                case .calls: CallSettings(settings: settings)
+                case .keys: KeySettings(settings: settings)
+                case .general: GeneralSettings(settings: settings, dictation: dictation)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle((pane ?? .dictation).title)
+        }
+        .frame(width: 720, height: 620)
+    }
+}
+
+struct DictationSettings: View {
+    @Bindable var settings: AppSettings
     @State private var check = ""
     @State private var checking = false
 
     var body: some View {
         Form {
-            Section("Диктовка") {
+            Section("Распознавание") {
                 Picker("Провайдер", selection: $settings.dictation.provider) {
                     ForEach(Provider.allCases) { Text($0.title).tag($0) }
                 }
@@ -72,13 +117,6 @@ struct SettingsView: View {
                     Text("Русский").tag("ru")
                     Text("English").tag("en")
                     Text("Определять сам").tag("auto")
-                }
-                Picker("Держать для записи", selection: $settings.hotkeyCode) {
-                    ForEach(Hotkey.all) { Text($0.name).tag($0.code) }
-                }
-                if settings.hotkeyCode == 63 {
-                    Text("В Системных настройках → Клавиатура для клавиши 🌐 поставь «Ничего не делать», иначе она откроет эмодзи.")
-                        .font(.callout).foregroundStyle(.secondary)
                 }
                 HStack {
                     Button(checking ? "Проверяю…" : "Проверить") { runCheck() }.disabled(checking)
@@ -96,47 +134,20 @@ struct SettingsView: View {
                 if settings.formatting.formatter != .off {
                     ModelField(model: $settings.formatting.model, suggestions: settings.formatting.formatter.suggestedModels)
                 }
-                Text("Абзацы, пунктуация, без паразитов и оговорок, смысл не меняется. Фразы короче \(TextFormatter.minWords) слов вставляются сразу. Если оформление не ответило или выкинуло часть текста — вставится распознанный как есть, исходник всегда есть в истории.")
+                Text("Абзацы, пунктуация, без паразитов и оговорок, смысл не меняется. Фразы короче \(TextFormatter.minWords) слов вставляются сразу. Если оформление не ответило или переписало текст — вставится распознанный как есть, исходник всегда есть в истории.")
                     .font(.callout).foregroundStyle(.secondary)
             }
 
-            CallSettingsSection(settings: settings)
-
-            Section("Ключи") {
-                SecureField("OpenAI", text: $openaiKey)
-                    .onChange(of: openaiKey) { _, key in Keychain.set("openai", key) }
-                SecureField("AssemblyAI", text: $assemblyaiKey)
-                    .onChange(of: assemblyaiKey) { _, key in Keychain.set("assemblyai", key) }
-                SecureField("DeepSeek", text: $deepseekKey)
-                    .onChange(of: deepseekKey) { _, key in Keychain.set("deepseek", key) }
-                TextField("Свой адрес", text: $settings.customEndpoint, prompt: Text("http://127.0.0.1:8767/v1/audio/transcriptions"))
-                SecureField("Ключ своего адреса", text: $customKey, prompt: Text("если нужен"))
-                    .onChange(of: customKey) { _, key in Keychain.set("custom", key) }
-                Text("Ключи хранятся в связке ключей macOS. OpenAI из России работает только с VPN.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-
-            Section("Система") {
-                Toggle("Запускать при входе в macOS", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, on in
-                        if on { try? SMAppService.mainApp.register() } else { try? SMAppService.mainApp.unregister() }
-                    }
-                LabeledContent("Микрофон", value: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? "есть" : "нет")
-                LabeledContent("Универсальный доступ") {
-                    if dictation.accessibilityGranted {
-                        Text("есть")
-                    } else {
-                        Button("Выдать") { openAccessibilitySettings() }
-                    }
+            Section("Клавиша") {
+                Picker("Держать для записи", selection: $settings.hotkeyCode) {
+                    ForEach(Hotkey.all) { Text($0.name).tag($0.code) }
                 }
-                if !dictation.accessibilityGranted {
-                    Text("Если Live Transcriber в списке уже включён — это запись от прошлой сборки. Удали её кнопкой «−» и добавь приложение заново.")
+                if settings.hotkeyCode == 63 {
+                    Text("В Системных настройках → Клавиатура для клавиши 🌐 поставь «Ничего не делать», иначе она откроет эмодзи.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
         }
-        .formStyle(.grouped)
-        .frame(width: 540, height: 720)  // секций стало много: форма прокручивается, а не вылезает за экран
     }
 
     private func runCheck() {
@@ -155,10 +166,77 @@ struct SettingsView: View {
     }
 }
 
+struct KeySettings: View {
+    @Bindable var settings: AppSettings
+    @State private var openaiKey = Keychain.get("openai")
+    @State private var assemblyaiKey = Keychain.get("assemblyai")
+    @State private var customKey = Keychain.get("custom")
+    @State private var deepseekKey = Keychain.get("deepseek")
+
+    var body: some View {
+        Form {
+            Section {
+                SecureField("OpenAI", text: $openaiKey)
+                    .onChange(of: openaiKey) { _, key in Keychain.set("openai", key) }
+                SecureField("AssemblyAI", text: $assemblyaiKey)
+                    .onChange(of: assemblyaiKey) { _, key in Keychain.set("assemblyai", key) }
+                SecureField("DeepSeek", text: $deepseekKey)
+                    .onChange(of: deepseekKey) { _, key in Keychain.set("deepseek", key) }
+            } footer: {
+                Text("Ключи хранятся в связке ключей macOS. OpenAI из России работает только с VPN.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Свой адрес распознавания") {
+                TextField("Адрес", text: $settings.customEndpoint, prompt: Text("http://127.0.0.1:8767/v1/audio/transcriptions"))
+                SecureField("Ключ", text: $customKey, prompt: Text("если нужен"))
+                    .onChange(of: customKey) { _, key in Keychain.set("custom", key) }
+            }
+        }
+    }
+}
+
+struct GeneralSettings: View {
+    @Bindable var settings: AppSettings
+    let dictation: Dictation
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+
+    var body: some View {
+        Form {
+            Section("Запуск") {
+                Toggle("Запускать при входе в macOS", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, on in
+                        if on { try? SMAppService.mainApp.register() } else { try? SMAppService.mainApp.unregister() }
+                    }
+                Toggle("Показывать окно записи созвона при запуске", isOn: $settings.startWindowOnLaunch)
+            }
+            Section("Разрешения") {
+                LabeledContent("Микрофон", value: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? "есть" : "нет")
+                LabeledContent("Универсальный доступ") {
+                    if dictation.accessibilityGranted {
+                        Text("есть")
+                    } else {
+                        Button("Выдать") { openAccessibilitySettings() }
+                    }
+                }
+                if !dictation.accessibilityGranted {
+                    Text("Если Live Transcriber в списке уже включён — это запись от прошлой сборки. Удали её кнопкой «−» и добавь приложение заново.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Section {
+                LabeledContent("Версия", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+            }
+        }
+    }
+}
+
 /// Модель вписывается руками или выбирается из подсказок провайдера.
 struct ModelField: View {
     @Binding var model: String
     let suggestions: [String]
+
+    /// Подписи к моделям, у которых по имени в API не видно версии.
+    private static let notes = ["deepseek-flash": "V4.1 Flash, быстрая", "deepseek-v4-pro": "V4 Pro, в 4 раза дороже"]
 
     var body: some View {
         LabeledContent("Модель") {
@@ -167,7 +245,9 @@ struct ModelField: View {
                     .labelsHidden()
                 if !suggestions.isEmpty {
                     Menu {
-                        ForEach(suggestions, id: \.self) { name in Button(name) { model = name } }
+                        ForEach(suggestions, id: \.self) { name in
+                            Button(Self.notes[name].map { "\(name) — \($0)" } ?? name) { model = name }
+                        }
                     } label: {
                         Image(systemName: "chevron.down")
                     }

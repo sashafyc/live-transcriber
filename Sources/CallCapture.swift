@@ -349,12 +349,12 @@ extension CallCapture {
             case "--summarize":
                 do {
                     let text = try String(contentsOfFile: arguments[2], encoding: .utf8)
-                    lines.append(try await Summary.make(text, prompt: AppSettings().callPrompt))
+                    lines.append(try await Summary.make(text, prompt: AppSettings().callPrompt, with: AppSettings().summary))
                 } catch {
                     lines.append("ОШИБКА: \(error.localizedDescription)")
                 }
             case "--check-keys":
-                lines.append(await Summary.checkKey())
+                lines.append(await Summary.checkKey(AppSettings().summary))
                 lines.append(await Telegram.check(chat: AppSettings().telegramChat))
             default:
                 do {
