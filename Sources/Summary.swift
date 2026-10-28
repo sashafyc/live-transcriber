@@ -21,7 +21,19 @@ enum Summary {
     private static let maxDirect = 120_000
     private static let part = 90_000
 
+    /// Запасной вариант, если выбранная нейросеть не ответила: OpenAI без VPN из России не пускает.
+    private static let fallback = Formatting(formatter: .deepseek, model: "deepseek-flash")
+
     static func make(_ transcript: String, prompt: String, with setup: Formatting) async throws -> String {
+        do {
+            return try await summarize(transcript, prompt, setup)
+        } catch let error where setup.formatter != fallback.formatter && !Keychain.get(fallback.formatter.rawValue).isEmpty {
+            Log.error("Итог через \(setup.formatter.title) \(setup.model) не вышел: \(error.localizedDescription). Делаю через \(fallback.model)")
+            return try await summarize(transcript, prompt, fallback)
+        }
+    }
+
+    private static func summarize(_ transcript: String, _ prompt: String, _ setup: Formatting) async throws -> String {
         let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw TranscriptionError("Транскрипт пустой, сводить нечего") }
         guard text.count > maxDirect else {
