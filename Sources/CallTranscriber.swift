@@ -33,7 +33,7 @@ enum CallTranscriber {
                 return (data["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             }
             return format(raw.map(utterance), only: only, multi: (data["audio_channels"] as? Int ?? 1) > 1)
-        case .openai, .chatgpt, .custom:
+        case .openai, .custom:
             let items = try await openAI(pcm, channels: channels, setup: setup, timeout: timeout)
             return format(items, only: only, multi: channels > 1)
         }
