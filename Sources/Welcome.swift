@@ -1,23 +1,20 @@
 import AVFoundation
 import SwiftUI
 
-/// Первый запуск: разрешения и ключи по шагам — что нажать, где взять, куда вставить.
+/// Первый раздел настроек: разрешения и ключи по шагам — что нажать, где взять, куда вставить.
 enum Welcome {
     private static let doneKey = "welcomeDone"
 
-    /// Показываем сами только тому, у кого ещё нет ни одного ключа: старых пользователей не дёргаем.
+    /// Открываем сами только тому, у кого ещё нет ни одного ключа: старых пользователей не дёргаем.
     static var needed: Bool {
         !UserDefaults.standard.bool(forKey: doneKey) && ["openai", "assemblyai", "deepseek"].allSatisfy { Keychain.get($0).isEmpty }
     }
 
-    static func show(_ settings: AppSettings, _ dictation: Dictation) {
-        // Новый человек — тот, у кого при открытии окна не было ни одного ключа: настроенное не трогаем
-        let fresh = needed
-        Windows.show("welcome", "Live Transcriber — первая настройка", WelcomeView(settings: settings, dictation: dictation) {
-            settings.adjustToKeys(firstRun: fresh)
-            UserDefaults.standard.set(true, forKey: doneKey)
-            Windows.close("welcome")
-        }, floating: false)  // человек будет ходить в Системные настройки — окно не должно их закрывать
+    /// «Готово»: сервисы под введённые ключи. `fresh` — ключей не было, когда окно открылось:
+    /// тогда это новый человек, иначе настроенное не трогаем.
+    static func finish(_ settings: AppSettings, fresh: Bool) {
+        settings.adjustToKeys(firstRun: fresh)
+        UserDefaults.standard.set(true, forKey: doneKey)
     }
 }
 
@@ -91,7 +88,7 @@ struct WelcomeView: View {
             Section("Готово") {
                 Text("Держи Fn 🌐 и говори — отпустишь, и текст вставится туда, где стоит курсор. Чтобы Fn не открывал эмодзи, в Системных настройках → Клавиатура поставь для 🌐 «Ничего не делать».")
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Созвоны — в меню под значком волны в строке меню вверху экрана. Модели, Telegram для итогов и всё остальное — в Настройках.")
+                Text("Созвоны — в меню под значком волны в строке меню вверху экрана. Модели, Telegram для итогов и всё остальное — в разделах слева.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Настройки клавиатуры") {
@@ -102,8 +99,6 @@ struct WelcomeView: View {
                 }
             }
         }
-        .formStyle(.grouped)
-        .frame(width: 560, height: 760)
     }
 
     private func askMicrophone() {

@@ -23,7 +23,7 @@ struct LiveTranscriberApp: App {
         let calls = Calls(settings: settings)
         _calls = State(initialValue: calls)
         if Welcome.needed {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Welcome.show(settings, dictation) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { SettingsView.show(settings, dictation) }
         } else if settings.startWindowOnLaunch {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { calls.openStart() }
         }
@@ -50,9 +50,6 @@ struct LiveTranscriberApp: App {
         }
         .defaultSize(width: 820, height: 600)
         .defaultLaunchBehavior(.suppressed)
-        Settings {
-            SettingsView(settings: settings, dictation: dictation)
-        }
     }
 }
 
@@ -62,7 +59,6 @@ struct MenuContent: View {
     let dictation: Dictation
     let calls: Calls
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         if dictation.accessibilityGranted {
@@ -77,15 +73,11 @@ struct MenuContent: View {
         Divider()
         CallMenuItems(calls: calls)
         Divider()
-        Button("Первая настройка…") { Welcome.show(settings, dictation) }
         Button("История диктовок…") {
             NSApp.activate()
             openWindow(id: "history")
         }
-        Button("Настройки…") {
-            NSApp.activate()
-            openSettings()
-        }
+        Button("Настройки…") { SettingsView.show(settings, dictation) }
         .keyboardShortcut(",")
         Divider()
         Button("Выход") { NSApp.terminate(nil) }

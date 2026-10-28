@@ -49,12 +49,13 @@ struct HistoryView: View {
 
 /// Разделы настроек — список слева, как в Системных настройках.
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case dictation, calls, keys, general
+    case start, dictation, calls, keys, general
 
     var id: Self { self }
 
     var title: String {
         switch self {
+        case .start: "Первая настройка"
         case .dictation: "Диктовка"
         case .calls: "Созвоны"
         case .keys: "Ключи"
@@ -64,6 +65,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
+        case .start: "hand.wave"
         case .dictation: "mic"
         case .calls: "phone"
         case .keys: "key"
@@ -75,7 +77,21 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @Bindable var settings: AppSettings
     let dictation: Dictation
-    @State private var pane: SettingsPane? = .dictation
+    @State private var pane: SettingsPane?
+    @State private var fresh = Welcome.needed
+
+    /// Окно открывается и из меню, и само при запуске без ключей — сцена Settings так не умеет.
+    /// Не поверх всех: из первой настройки человек ходит в Системные настройки.
+    static func show(_ settings: AppSettings, _ dictation: Dictation, pane: SettingsPane? = nil) {
+        Windows.show("settings", "Настройки", SettingsView(settings: settings, dictation: dictation,
+                                                           pane: pane ?? (Welcome.needed ? .start : .dictation)), floating: false)
+    }
+
+    init(settings: AppSettings, dictation: Dictation, pane: SettingsPane) {
+        self.settings = settings
+        self.dictation = dictation
+        _pane = State(initialValue: pane)
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -85,6 +101,12 @@ struct SettingsView: View {
         } detail: {
             Group {
                 switch pane ?? .dictation {
+                case .start:
+                    WelcomeView(settings: settings, dictation: dictation) {
+                        Welcome.finish(settings, fresh: fresh)
+                        fresh = false
+                        pane = .dictation
+                    }
                 case .dictation: DictationSettings(settings: settings)
                 case .calls: CallSettings(settings: settings)
                 case .keys: KeySettings(settings: settings)
