@@ -102,7 +102,7 @@ import UserNotifications
 
     private func levels(_ levels: [Double]) {
         guard state == .recording || state == .silent else { return }  // последний кусок приходит уже после «Остановить»
-        if levels[0] < CallAudio.silence {
+        if levels[0] < CallAudio.deadMic {
             silentStreak += 1
             state = .silent
             if silentStreak == 2 { notify("Две минуты тишины", "Запись идёт, но микрофон молчит. Проверьте вход звука.") }

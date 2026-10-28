@@ -13,7 +13,7 @@ struct LiveTranscriberApp: App {
         TextFormatter.checkFromCommandLine()
         CallCapture.checkFromCommandLine()
         let settings = AppSettings(), history = History()
-        Log.info("=== Live Transcriber 2 запущен ===")
+        Log.info("=== Live Transcriber \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") запущен ===")
         LegacyConfig.importOnce(settings)
         _settings = State(initialValue: settings)
         _history = State(initialValue: history)

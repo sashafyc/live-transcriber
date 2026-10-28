@@ -1,6 +1,6 @@
 import Foundation
 
-/// Время записей — московское, как у Python-версии: папки и шапки расшифровок совпадают.
+/// Время записей — московское, как у версий 1.x: папки и шапки расшифровок совпадают.
 private let msk = TimeZone(secondsFromGMT: 3 * 3600)!
 
 private func formatter(_ format: String) -> DateFormatter {
@@ -12,11 +12,10 @@ private func formatter(_ format: String) -> DateFormatter {
 }
 
 /// Папка одной записи: transcript.md, summary.md, session.log, meta.json, audio.flac.
-/// Папка общая с Python-версией: история не обрывается при переезде, и старые записи
-/// можно расшифровать заново отсюда.
+/// Формат тот же, что у версий 1.x на Python: история не обрывается при обновлении,
+/// и старые записи можно расшифровать заново.
 struct CallRecord: Identifiable, Hashable {
-    static let dir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Live Transcriber/records")
+    static let dir = supportDir.appendingPathComponent("records")
     static let keepDays = 30.0
     /// Звук занимает в сотни раз больше текста и живёт неделю: этого хватает, чтобы переделать свежую расшифровку
     static let keepAudioDays = 7.0
@@ -176,14 +175,13 @@ enum Log {
     }
 }
 
-/// Ключи и настройки Python-версии переезжают один раз, при первом запуске.
+/// Ключи и настройки версий 1.x (Python) переезжают в связку ключей один раз, при первом запуске.
 enum LegacyConfig {
     static func importOnce(_ settings: AppSettings) {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: "legacyImported") else { return }
         defaults.set(true, forKey: "legacyImported")
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Live Transcriber/config.json")
+        let url = supportDir.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: url),
               let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         var moved: [String] = []

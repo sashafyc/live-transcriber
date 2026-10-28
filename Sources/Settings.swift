@@ -38,7 +38,7 @@ struct Hotkey: Identifiable {
         formatting = Self.load("formatting") ?? Formatting(formatter: .off, model: "")
         hotkeyCode = UInt16(defaults.object(forKey: "hotkey") as? Int ?? 63)
         customEndpoint = defaults.string(forKey: Transcriber.customEndpointKey) ?? ""
-        // Русский пакетно точно знает universal-2: на нём Python-версия писала все звонки
+        // Русский пакетно точно знает universal-2: на нём версии 1.x писали все звонки
         calls = Self.load("calls") ?? Recognition(provider: .assemblyai, model: "universal-2", language: "ru")
         telegramChat = defaults.string(forKey: "telegramChat") ?? ""
         sendToTelegram = defaults.object(forKey: "sendToTelegram") as? Bool ?? true

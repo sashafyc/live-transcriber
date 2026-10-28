@@ -248,7 +248,7 @@ extension CallCapture {
             report.ok = false
             report.problems.append("микрофон не отдаёт звук: проверь разрешение и устройство")
             report.lines.append("❌ Микрофон не отдаёт звук")
-        } else if level < CallAudio.silence {
+        } else if level < CallAudio.deadMic {
             report.ok = false
             report.problems.append("микрофон молчит: проверь, не выключен ли он")
             report.lines.append("⚠️ Микрофон молчит (уровень \(Int(level)))")

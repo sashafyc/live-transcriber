@@ -5,9 +5,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>pro.ainvest.livetranscriber</string>
 	<key>CFBundleName</key>
-	<string>Live Transcriber 2</string>
+	<string>Live Transcriber</string>
 	<key>CFBundleDisplayName</key>
-	<string>Live Transcriber 2</string>
+	<string>Live Transcriber</string>
 	<key>CFBundleExecutable</key>
 	<string>LiveTranscriber</string>
 	<key>CFBundleIconFile</key>

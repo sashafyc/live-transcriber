@@ -130,7 +130,7 @@ struct SettingsView: View {
                     }
                 }
                 if !dictation.accessibilityGranted {
-                    Text("Если Live Transcriber 2 в списке уже включён — это запись от прошлой сборки. Удали её кнопкой «−» и добавь приложение заново.")
+                    Text("Если Live Transcriber в списке уже включён — это запись от прошлой сборки. Удали её кнопкой «−» и добавь приложение заново.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }

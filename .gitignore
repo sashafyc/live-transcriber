@@ -3,16 +3,9 @@ config.json
 *.env
 .env
 
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-
 # Сборка
+.build/
 build/
-dist/
-*.egg-info/
 
 # macOS
 .DS_Store

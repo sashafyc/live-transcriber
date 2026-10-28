@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 let supportDir = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Application Support/Live Transcriber 2")
+    .appendingPathComponent("Library/Application Support/Live Transcriber")
 
 struct DictationEntry: Codable, Identifiable {
     let id: UUID

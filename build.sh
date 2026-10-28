@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Сборка «Live Transcriber 2.app». С флагом --install кладёт в /Applications и запускает.
+# Сборка «Live Transcriber.app». С флагом --install кладёт в /Applications и запускает.
 set -euo pipefail
 cd "$(dirname "$0")"
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -8,12 +8,12 @@ swift build -c release --arch arm64
 BIN="$(swift build -c release --arch arm64 --show-bin-path)/LiveTranscriber"
 # Бандл собираем вне Документов: их синкает iCloud, и File Provider навешивает на .app
 # атрибуты сразу после xattr -cr — codesign падает с «detritus not allowed»
-APP="${TMPDIR:-/tmp}/lt-build/Live Transcriber 2.app"
+APP="${TMPDIR:-/tmp}/lt-build/Live Transcriber.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/"
 cp "$BIN" "$APP/Contents/MacOS/"
-cp ../assets/icon.icns "$APP/Contents/Resources/"
+cp assets/icon.icns "$APP/Contents/Resources/"
 xattr -cr "$APP"
 
 # Подпись Apple Development (бесплатный Apple ID в Xcode) не меняется между сборками,
@@ -24,7 +24,7 @@ echo "Подпись: ${IDENTITY:-ad-hoc}"
 
 if [[ "${1:-}" == "--install" ]]; then
     pkill -x LiveTranscriber || true
-    rm -rf "/Applications/Live Transcriber 2.app"
-    ditto "$APP" "/Applications/Live Transcriber 2.app"
-    open "/Applications/Live Transcriber 2.app"
+    rm -rf "/Applications/Live Transcriber.app"
+    ditto "$APP" "/Applications/Live Transcriber.app"
+    open "/Applications/Live Transcriber.app"
 fi
