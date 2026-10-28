@@ -252,7 +252,7 @@ struct CallSettings: View {
                 .onChange(of: settings.calls.provider) { _, provider in
                     settings.calls.model = provider.suggestedModels.first ?? ""
                 }
-                ModelField(model: $settings.calls.model, suggestions: settings.calls.provider.suggestedModels)
+                ModelField(model: $settings.calls.model, suggestions: settings.calls.provider.suggestedModels, hints: Provider.hints)
                 Picker("Язык", selection: $settings.calls.language) {
                     Text("Русский").tag("ru")
                     Text("English").tag("en")
@@ -270,7 +270,8 @@ struct CallSettings: View {
                 .onChange(of: settings.summary.formatter) { _, formatter in
                     settings.summary.model = formatter.suggestedModels.first ?? ""
                 }
-                ModelField(model: $settings.summary.model, suggestions: settings.summary.formatter.suggestedModels)
+                ModelField(model: $settings.summary.model, suggestions: settings.summary.formatter.suggestedModels,
+                           hints: Formatter.summaryHints)
                 LabeledContent("Задание для итога") {
                     TextEditor(text: $settings.callPrompt).font(.system(size: 11)).frame(height: 90)
                 }

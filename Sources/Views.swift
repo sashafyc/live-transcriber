@@ -112,7 +112,7 @@ struct DictationSettings: View {
                 .onChange(of: settings.dictation.provider) { _, provider in
                     settings.dictation.model = provider.suggestedModels.first ?? ""
                 }
-                ModelField(model: $settings.dictation.model, suggestions: settings.dictation.provider.suggestedModels)
+                ModelField(model: $settings.dictation.model, suggestions: settings.dictation.provider.suggestedModels, hints: Provider.hints)
                 Picker("Язык", selection: $settings.dictation.language) {
                     Text("Русский").tag("ru")
                     Text("English").tag("en")
@@ -132,7 +132,8 @@ struct DictationSettings: View {
                     settings.formatting.model = formatter.suggestedModels.first ?? ""
                 }
                 if settings.formatting.formatter != .off {
-                    ModelField(model: $settings.formatting.model, suggestions: settings.formatting.formatter.suggestedModels)
+                    ModelField(model: $settings.formatting.model, suggestions: settings.formatting.formatter.suggestedModels,
+                               hints: Formatter.formattingHints)
                 }
                 Text("Абзацы, пунктуация, без паразитов и оговорок, смысл не меняется. Фразы короче \(TextFormatter.minWords) слов вставляются сразу. Если оформление не ответило или переписало текст — вставится распознанный как есть, исходник всегда есть в истории.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -234,6 +235,7 @@ struct GeneralSettings: View {
 struct ModelField: View {
     @Binding var model: String
     let suggestions: [String]
+    var hints: [String: String] = [:]
 
     /// Подписи к моделям, у которых по имени в API не видно версии.
     private static let notes = ["deepseek-flash": "V4.1 Flash, быстрая", "deepseek-v4-pro": "V4 Pro, в 4 раза дороже"]
@@ -256,6 +258,9 @@ struct ModelField: View {
                     .fixedSize()
                 }
             }
+        }
+        if let hint = hints[model] {
+            Text(hint).font(.callout).foregroundStyle(.secondary)
         }
     }
 }

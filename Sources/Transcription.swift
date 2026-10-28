@@ -22,6 +22,16 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
         case .custom: []
         }
     }
+
+    /// Подсказка под полем модели.
+    static let hints = [
+        "gpt-4o-transcribe": "Лучшая у OpenAI: точно держит русский, имена и термины. $0,006 за минуту. Нужен VPN.",
+        "gpt-4o-mini-transcribe": "Вдвое дешевле, $0,003 за минуту, но чаще ошибается в именах и терминах. Нужен VPN.",
+        "whisper-1": "Старая модель: стоит как gpt-4o-transcribe, а ошибается чаще.",
+        "universal-2": "Единственная пакетная модель AssemblyAI с русским, делит голоса по спикерам. $0,15 за час.",
+        "universal-3-5-pro": "Русского нет: AssemblyAI молча распознает через universal-2.",
+        "universal-3-pro": "Русского нет: AssemblyAI молча распознает через universal-2.",
+    ]
 }
 
 /// Что и чем распознавать: своё для диктовки и для созвонов.
