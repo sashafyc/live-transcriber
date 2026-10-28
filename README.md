@@ -181,21 +181,6 @@ xattr -dr com.apple.quarantine "/Applications/Live Transcriber.app"
 сервис распознавания, текст — в DeepSeek или OpenAI для итога и оформления,
 и итог — в ваш Telegram-чат.
 
-## Сборка из исходников
-
-Нужен Xcode (полный, не только Command Line Tools).
-
-```bash
-git clone https://github.com/sashafyc/live-transcriber.git
-cd live-transcriber
-./build.sh --install
-```
-
-Скрипт соберёт приложение, подпишет его сертификатом Apple Development, если он
-есть в связке ключей, и положит в «Программы». С подписью разрешения не слетают
-при пересборке, без неё (ad-hoc) их придётся выдавать заново после каждой сборки.
-`./build.sh --dmg` собирает образ для релиза.
-
 ## Обновление с версии 1.x
 
 - Ключи и ссылка на чат из старого `config.json` переезжают в связку ключей сами,
@@ -207,3 +192,22 @@ cd live-transcriber
 ## Лицензия
 
 MIT
+
+<details>
+<summary>Для разработчиков: сборка из исходников</summary>
+
+Для установки это не нужно — достаточно `.dmg` из релизов. Собрать самому можно
+на маке с полным Xcode: Command Line Tools не хватит для SwiftUI.
+
+```bash
+git clone https://github.com/sashafyc/live-transcriber.git
+cd live-transcriber
+./build.sh --install   # собрать и положить в Программы
+./build.sh --dmg       # собрать образ для релиза
+```
+
+Подпись: для `--install` — сертификат Apple Development из связки ключей, для
+`--dmg` — самоподписанный «Live Transcriber». С постоянным сертификатом разрешения
+macOS не слетают при пересборке; без него приложение подписывается ad-hoc, и
+разрешения придётся выдавать заново.
+</details>
