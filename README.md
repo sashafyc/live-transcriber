@@ -1,6 +1,6 @@
 # Live Transcriber
 
-![версия](https://img.shields.io/badge/версия-2.1.0-blue) ![платформа](https://img.shields.io/badge/платформа-macOS%2015%2B-lightgrey)
+![версия](https://img.shields.io/badge/версия-2.1.1-blue) ![платформа](https://img.shields.io/badge/платформа-macOS%2015%2B-lightgrey)
 
 Приложение в строке меню macOS. Умеет две вещи:
 
