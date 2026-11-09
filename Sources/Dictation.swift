@@ -116,15 +116,41 @@ import Observation
             tail.map(sendPart)
             let parts = self.parts
             self.parts = []
+            // Речи не нашлось: часто это программа созвона убавила микрофон или забрала его себе
+            let loudest = parts.isEmpty ? Segmenter.loudest(all) : 0
+            let audio = parts.isEmpty && loudest > -90 && loudest < -35 ? Segmenter.boosted(all, from: loudest) : all
             do {
-                try Segmenter.wav(all).write(to: audioURL(id))
+                try Segmenter.wav(audio).write(to: audioURL(id))
             } catch {
                 return fail("Не записался звук: \(error.localizedDescription)")
             }
             history.add(DictationEntry(id: id, date: date, seconds: Double(all.count) / Segmenter.rate,
                                        recognition: setup, audioName: audioURL(id).lastPathComponent))
-            collect(id, parts, setup)
+            guard parts.isEmpty else { return collect(id, parts, setup) }
+            unheard(id, all, audio, loudest)
         }
+    }
+
+    /// Куски не нарезались. Тихую запись распознаём усиленной; если речи нет и так — объясняем почему.
+    private func unheard(_ id: UUID, _ all: [Int16], _ audio: [Int16], _ loudest: Float) {
+        let mic = AudioDevices.defaultInput()
+        let volume = mic.volume.map { " (громкость входа \(Int($0 * 100))%)" } ?? ""
+        Log.info(String(format: "Диктовка: речи не слышно, %.1f с, микрофон «%@»%@, самое громкое место %.0f дБ",
+                        Double(all.count) / Segmenter.rate, mic.name, volume, loudest))
+        if audio != all, Segmenter.hasSpeech(audio) {
+            Log.info("Диктовка: звук тихий — усилил и распознаю целиком")
+            return send(id, paste: true)
+        }
+        // Обычная тишина — случайное нажатие, звук тут ни к чему
+        guard loudest < -35 else {
+            history.update(id) { $0.error = "Речи не слышно" }
+            return state = .idle
+        }
+        let message = loudest <= -90
+            ? "Микрофон «\(mic.name)» отдаёт тишину: его выключила или заняла другая программа"
+            : "Микрофон «\(mic.name)» почти не слышно\(volume): проверь его в программе созвона"
+        history.update(id) { $0.error = message }
+        fail(message)
     }
 
     /// Собирает куски по порядку. Если какой-то не распознался — распознаём запись целиком.

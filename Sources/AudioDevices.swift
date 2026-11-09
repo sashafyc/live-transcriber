@@ -43,6 +43,15 @@ enum AudioDevices {
         return mics.first { $0.transport != kAudioDeviceTransportTypeBuiltIn } ?? mics.first
     }
 
+    /// Микрофон, который сейчас слышит диктовка, и его громкость в системе (0…1, если её можно менять).
+    static func defaultInput() -> (name: String, volume: Float32?) {
+        let id = property(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice, AudioObjectID(0))
+        var address = address(kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyScopeInput)
+        var volume: Float32 = 0, size = UInt32(MemoryLayout<Float32>.size)
+        let status = AudioObjectGetPropertyData(id, &address, 0, nil, &size, &volume)
+        return (string(id, kAudioObjectPropertyName), status == noErr ? volume : nil)
+    }
+
     static func defaultOutput() -> AudioDevice? {
         let id = property(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice, AudioObjectID(0))
         return all().first { $0.id == id }

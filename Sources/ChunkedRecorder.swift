@@ -68,6 +68,27 @@ struct Segmenter {
         return [Chunk(samples: Array(samples[chunkStart..<end]), speech: Double(speechWindows * Self.window) / Self.rate)]
     }
 
+    /// Громкость самого громкого окна записи.
+    static func loudest(_ samples: [Int16]) -> Float {
+        stride(from: 0, to: samples.count - window + 1, by: window).map { decibels(samples[$0..<$0 + window]) }.max() ?? -160
+    }
+
+    /// Тихая запись — громче, чтобы самое громкое место было на `target` дБ.
+    static func boosted(_ samples: [Int16], from loudest: Float, to target: Float = -15) -> [Int16] {
+        amplified(samples, by: pow(10, (target - loudest) / 20))
+    }
+
+    static func amplified(_ samples: [Int16], by gain: Float) -> [Int16] {
+        guard gain != 1 else { return samples }
+        return samples.map { Int16(max(-32768, min(32767, (Float($0) * gain).rounded()))) }
+    }
+
+    /// Есть ли в записи речь — тем же правилом, что режет на куски.
+    static func hasSpeech(_ samples: [Int16]) -> Bool {
+        var segmenter = Segmenter()
+        return !segmenter.append(samples).chunks.isEmpty || segmenter.finish() != nil
+    }
+
     static func decibels(_ slice: ArraySlice<Int16>) -> Float {
         let power = slice.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(max(slice.count, 1))
         return power > 0 ? Float(10 * log10(power / (32768.0 * 32768.0))) : -160
@@ -124,8 +145,12 @@ final class ChunkedRecorder {
         guard format.sampleRate > 0, let converter = AVAudioConverter(from: format, to: Segmenter.format) else {
             throw TranscriptionError("Микрофон не отдаёт звук")
         }
+        // Встроенный микрофон бывает трёхканальным (во время созвонов), и сведение 3 → 1 у Apple даёт нули.
+        // Каналы там — сырые капсулы, речь на ~30 дБ тише обычного: без усиления не видно ни волны, ни пауз
+        converter.channelMap = [0]
+        let gain: Float = format.channelCount > 2 ? 31.6 : 1
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-            let samples = Segmenter.convert(buffer, converter)
+            let samples = Segmenter.amplified(Segmenter.convert(buffer, converter), by: gain)
             DispatchQueue.main.async { self?.append(samples) }
         }
         engine.prepare()
