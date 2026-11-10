@@ -9,14 +9,16 @@ final class RecordingHUD {
 
     init(dictation: Dictation) {
         panel = NSPanel(contentRect: NSRect(origin: .zero, size: Self.size),
-                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isFloatingPanel = true
         panel.level = .statusBar
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
         panel.ignoresMouseEvents = true  // не перехватывает клики и не забирает фокус у окна, куда вставляем
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // Окно на сервере окон создаём сразу (defer: false): с отложенным созданием macOS не помечает панель
+        // как «не активирующую» и не пускает её в чужое полноэкранное пространство — плашка оставалась на рабочем столе
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.contentView = NSHostingView(rootView: HUDView(dictation: dictation))
     }
 
